@@ -38,6 +38,7 @@ class QuickStatsRow extends StatelessWidget {
         : breakerEnergy > 0
         ? breakerEnergy
         : reading.energyToday;
+    final energyDisplay = _energyDisplay(energyMonth);
 
     return Row(
       children: [
@@ -72,10 +73,8 @@ class QuickStatsRow extends StatelessWidget {
         Expanded(
           child: MetricCard(
             title: 'Energy',
-            value: reading.monthDataAvailable
-                ? energyMonth.toStringAsFixed(1)
-                : '--',
-            unit: reading.monthDataAvailable ? 'kWh' : '',
+            value: reading.monthDataAvailable ? energyDisplay.value : '--',
+            unit: reading.monthDataAvailable ? energyDisplay.unit : '',
             icon: Icons.speed,
             color: ColorTokens.success,
             trendLabel: reading.monthDataAvailable ? 'month' : 'no data',
@@ -84,4 +83,11 @@ class QuickStatsRow extends StatelessWidget {
       ],
     );
   }
+}
+
+({String value, String unit}) _energyDisplay(double kwh) {
+  if (kwh > 0 && kwh < 1) {
+    return (value: (kwh * 1000).toStringAsFixed(0), unit: 'Wh');
+  }
+  return (value: kwh.toStringAsFixed(1), unit: 'kWh');
 }

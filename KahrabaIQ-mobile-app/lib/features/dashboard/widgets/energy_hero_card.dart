@@ -23,6 +23,9 @@ class EnergyHeroCard extends StatelessWidget {
     final powerKw = reading.power / 1000;
     final progress = (powerKw / 4).clamp(0.05, 1.0);
     final hasMonth = reading.monthDataAvailable;
+    final monthCostLabel = costMonth > 0 && costMonth < 0.001
+        ? '<0.001 BD'
+        : formatCost(costMonth);
     return RepaintBoundary(
       child: Container(
         padding: const EdgeInsets.all(22),
@@ -61,14 +64,14 @@ class EnergyHeroCard extends StatelessWidget {
                   const SizedBox(height: 14),
                   Text(
                     hasMonth
-                        ? 'This month ${formatCost(costMonth)}'
+                        ? 'This month $monthCostLabel'
                         : 'No monthly data yet',
                     style: AppTextStyles.bodyMedium,
                   ),
                   const SizedBox(height: 4),
                   Text(
                     hasMonth
-                        ? '${reading.energyMonth.toStringAsFixed(1)} kWh this month'
+                        ? '${formatEnergy(reading.energyMonth)} this month'
                         : 'Waiting for cloud summaries',
                     style: AppTextStyles.caption.copyWith(
                       color: ColorTokens.textPrimary,
