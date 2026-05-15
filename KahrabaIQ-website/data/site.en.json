@@ -144,7 +144,7 @@
     "nameLabel": "Name",
     "namePlaceholder": "Your name",
     "emailInputLabel": "Email",
-    "emailPlaceholder": "you@example.com",
+    "emailPlaceholder": "example@domain.com",
     "messageLabel": "Message",
     "messagePlaceholder": "Tell us what you want to explore",
     "submit": "Send Message",

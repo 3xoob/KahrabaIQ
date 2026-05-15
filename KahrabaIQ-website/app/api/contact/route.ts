@@ -23,7 +23,7 @@ export async function POST(request: Request) {
   const clientKey = getClientKey(request);
   if (!checkRateLimit(clientKey)) {
     return NextResponse.json(
-      { error: "Too many messages in a short time. Please try again later." },
+      { error: "Too many messages sent in a short time. Please wait a moment and try again." },
       { status: 429 }
     );
   }
@@ -93,19 +93,19 @@ function validatePayload({
   message
 }: Required<ContactPayload>): string | undefined {
   if (!name || !email || !message) {
-    return "Name, email, and message are required.";
+    return "Please fill in your name, email, and message.";
   }
 
   if (!emailRegex.test(email)) {
-    return "Please enter a valid email address.";
+    return "Please enter a valid email address, such as example@domain.com.";
   }
 
   if (name.length > 120) {
-    return "Name must be under 120 characters.";
+    return "Please keep your name under 120 characters.";
   }
 
   if (email.length > 160) {
-    return "Email must be under 160 characters.";
+    return "Please keep your email address under 160 characters.";
   }
 
   if (message.length < 10) {
@@ -113,7 +113,7 @@ function validatePayload({
   }
 
   if (message.length > 2000) {
-    return "Message must be under 2000 characters.";
+    return "Please keep your message under 2000 characters.";
   }
 
   return undefined;

@@ -36,9 +36,14 @@ export function ContactSection({ content }: { content: SiteContent }) {
         body: JSON.stringify(payload)
       });
 
-      await response.json().catch(() => null);
+      const result = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error(content.contact.error);
+        const message =
+          result && typeof result.error === "string"
+            ? result.error
+            : content.contact.error;
+
+        throw new Error(message);
       }
 
       setStatus(content.contact.success);
@@ -69,8 +74,8 @@ export function ContactSection({ content }: { content: SiteContent }) {
             <button className="button primary full" type="submit" disabled={loading}>
               {loading ? content.contact.sending : content.contact.submit}
             </button>
-            {status && <p className="form-status success">{status}</p>}
-            {error && <p className="form-status error">{error}</p>}
+            {status && <p className="form-status success" aria-live="polite">{status}</p>}
+            {error && <p className="form-status error" aria-live="polite">{error}</p>}
           </form>
         </div>
       </div>
