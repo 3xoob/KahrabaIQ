@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="KahrabaIQ-website/public/kahrabaiq-wordmark.png" alt="KahrabaIQ" width="360" />
+  <img src="KahrabaIQ-website/public/kahrabaiq-brand-identity.png" alt="KahrabaIQ" width="360" />
 </p>
-
-<h1 align="center">KahrabaIQ</h1>
 
 <p align="center">
   AI-powered smart energy, electrical safety, and local-first home automation.
