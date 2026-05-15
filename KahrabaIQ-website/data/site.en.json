@@ -191,7 +191,7 @@
     "projectRepo": {
       "label": "Full project repository",
       "placeholder": "Link coming soon",
-      "url": ""
+      "url": "https://github.com/3xoob/KahrabaIQ.git"
     }
   },
   "accessibility": {

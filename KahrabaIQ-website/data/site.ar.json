@@ -191,7 +191,7 @@
     "projectRepo": {
       "label": "مستودع المشروع الكامل",
       "placeholder": "سيضاف الرابط لاحقا",
-      "url": ""
+      "url": "https://github.com/3xoob/KahrabaIQ.git"
     }
   },
   "accessibility": {
