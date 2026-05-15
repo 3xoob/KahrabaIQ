@@ -1,0 +1,207 @@
+{
+  "locale": "en",
+  "languageName": "English",
+  "metadata": {
+    "title": "KAHRABAIQ",
+    "description": "KAHRABAIQ is an AI-driven smart energy and electrical safety system by University of Bahrain senior project students."
+  },
+  "brand": {
+    "name": "KAHRABAIQ",
+    "prefix": "KAHRABA",
+    "suffix": "IQ"
+  },
+  "assets": {
+    "emblem": "/kahrabaiq-emblem.png",
+    "favicon": "/favicon.ico",
+    "wordmark": "/kahrabaiq-wordmark.png",
+    "fullIdentity": "/kahrabaiq-brand-identity.png",
+    "emblemAlt": "KAHRABAIQ AI emblem",
+    "wordmarkAlt": "KAHRABAIQ wordmark",
+    "fullIdentityAlt": "KAHRABAIQ full brand identity"
+  },
+  "languages": {
+    "label": "Language selection",
+    "english": "EN",
+    "arabic": "AR"
+  },
+  "nav": [
+    { "label": "Home", "id": "home" },
+    { "label": "Features", "id": "features" },
+    { "label": "Architecture", "id": "architecture" },
+    { "label": "Technology", "id": "technology" },
+    { "label": "Demo", "id": "demo" },
+    { "label": "Team", "id": "team" },
+    { "label": "Contact", "id": "contact" }
+  ],
+  "hero": {
+    "kicker": "UNIVERSITY OF BAHRAIN · SENIOR PROJECT 2026",
+    "headline": ["AI-Driven", "Smart", "Energy", "&", "Electrical", "Safety", "System"],
+    "subheadline": "Intelligent energy optimization, predictive safety, occupancy awareness, and emergency response, powered by AI.",
+    "primaryCta": "Explore Features",
+    "secondaryCta": "View Demo",
+    "scroll": "SCROLL"
+  },
+  "homeStrip": [
+    { "key": "energy", "icon": "stripEnergy", "labelLines": ["Energy", "Optimization"] },
+    { "key": "occupancy", "icon": "stripOccupancy", "labelLines": ["Occupancy", "Awareness"] },
+    { "key": "overload", "icon": "stripOverload", "labelLines": ["Overload", "Protection"] },
+    { "key": "fire", "icon": "stripFire", "labelLines": ["Fire &", "Emergency"] },
+    { "key": "ai", "icon": "stripAi", "labelLines": ["AI Decision", "Engine"] },
+    { "key": "monitor", "icon": "stripMonitor", "labelLines": ["Real-Time", "Monitoring"] },
+    { "key": "predict", "icon": "stripPredict", "labelLines": ["Predictive", "Safety"] },
+    { "key": "schedule", "icon": "stripSchedule", "labelLines": ["Smart", "Scheduling"] }
+  ],
+  "sections": {
+    "features": { "label": "Features", "title": "FEATURES IN OUR SYSTEM", "subtitle": "Seven intelligent systems cooperating." },
+    "architecture": { "label": "Architecture", "title": "How It Thinks.", "subtitle": "A real-time intelligent pipeline from sensor to decision." },
+    "technology": { "label": "Technology", "title": "The Stack Behind the Intelligence." },
+    "demo": { "label": "Showcase", "title": "See It In Action." },
+    "team": { "label": "The Team", "title": "Built By." },
+    "contact": { "label": "Contact", "title": "Get In Touch." }
+  },
+  "features": [
+    { "title": "Energy Optimization", "icon": "bolt", "description": "AI balances demand across connected loads and schedules high-consumption devices with precision. Waste is identified early, before it becomes visible on the bill." },
+    { "title": "Occupancy Awareness", "icon": "eye", "description": "Motion and sound readings intelligently detect room presence instead of relying on fixed assumptions. Lighting and appliance behavior adapt only when the space is occupied." },
+    { "title": "Overload Protection", "icon": "shield", "description": "Current sensing watches for abnormal load patterns in real time. Protective relay action can be triggered before stress becomes equipment damage." },
+    { "title": "Fire & Emergency", "icon": "flame", "description": "Smoke, gas, heat, and risk signals converge into one emergency logic layer. The system prioritizes decisive alerts and fast protective response." },
+    { "title": "AI Decision Engine", "icon": "cpu", "description": "A Python intelligence layer evaluates live sensor context and operating state. It recommends safe, efficient control actions with machine-level consistency." },
+    { "title": "Real-Time Monitoring", "icon": "activity", "description": "Dashboard telemetry exposes energy use, room states, relay activity, and risk signals as they happen. Operators see the electrical environment without delay or guesswork." },
+    { "title": "Predictive Safety", "icon": "radar", "description": "Pattern detection identifies early warning behavior before it becomes a fault. Electrical safety shifts from reactive response to anticipatory control." }
+  ],
+  "architecture": [
+    { "layer": "Physical Layer", "title": "Sensors", "items": ["PIR / Smoke", "Current / Temp"], "icon": "sensor" },
+    { "layer": "Edge Layer", "title": "ESP32", "items": ["MCU", "Relays"], "icon": "bolt" },
+    { "layer": "Cloud / AI Layer", "title": "AI Engine", "items": ["Python / AI", "AWS"], "icon": "cloud" },
+    { "layer": "Interface Layer", "title": "Dashboard", "items": ["Web + App", "Operator View"], "icon": "monitor" }
+  ],
+  "connectors": {
+    "mqtt": "MQTT"
+  },
+  "terminal": {
+    "label": "KAHRABAIQ SYSTEM BOOT",
+    "skip": "SKIP →",
+    "online": "[ KAHRABAIQ ONLINE ]",
+    "lines": [
+      "Initializing KAHRABAIQ...",
+      "Initializing Pi hub...",
+      "Booting AI energy core...",
+      "Connecting ESP32 modules...",
+      "Scanning occupancy sensors...",
+      "Loading power monitoring system...",
+      "Activating overload protection...",
+      "Syncing emergency shutdown protocol...",
+      "System ready."
+    ]
+  },
+  "languageTerminal": {
+    "label": "KAHRABAIQ INTERFACE RECONFIG",
+    "skip": "SKIP →",
+    "online": "[ LANGUAGE UPDATED ]",
+    "lines": [
+      "Switching interface language...",
+      "Loading English interface...",
+      "Updating layout direction...",
+      "Applying localized content...",
+      "Language updated."
+    ]
+  },
+  "architectureNetwork": {
+    "center": { "title": "KAHRABAIQ Platform", "label": "Cloud + Edge Intelligence", "icon": "radar" },
+    "nodes": [
+      { "title": "ESP32 Room Sensor", "label": "Sensing Node", "icon": "cpu", "position": "top-left" },
+      { "title": "Room Readings", "label": "Motion / Sound / Gas", "icon": "activity", "position": "top" },
+      { "title": "Raspberry Pi Hub", "label": "Local Edge", "icon": "bolt", "position": "top-right" },
+      { "title": "SQLite Buffer", "label": "Local State", "icon": "cloud", "position": "left" },
+      { "title": "AWS API", "label": "FastAPI Backend", "icon": "cloud", "position": "right" },
+      { "title": "AI Decision Engine", "label": "Prediction Layer", "icon": "radar", "position": "bottom-left" },
+      { "title": "DynamoDB", "label": "Cloud Storage", "icon": "cloud", "position": "bottom" },
+      { "title": "Flutter App + Dashboard", "label": "User Interface", "icon": "monitor", "position": "bottom-right" },
+      { "title": "Home Assistant / Matter", "label": "Device Control", "icon": "shield", "position": "lower" }
+    ]
+  },
+  "technology": [
+    { "group": "Frontend & Website", "items": ["Next.js", "React", "TypeScript", "GSAP", "Custom CSS", "JSON Localization"] },
+    { "group": "Mobile App", "items": ["Flutter", "Dart", "Provider", "Dio", "MQTT", "QR Scanner", "Local Notifications"] },
+    { "group": "Backend & AI", "items": ["Python", "FastAPI", "Uvicorn", "scikit-learn", "Pandas", "NumPy", "Joblib", "Gemini API"] },
+    { "group": "Cloud", "items": ["AWS", "EC2", "DynamoDB", "Cognito", "AWS IoT Core"] },
+    { "group": "Raspberry Pi Runtime", "items": ["Raspberry Pi", "SQLite3", "Flask", "systemd", "Chromium Kiosk", "NetworkManager"] },
+    { "group": "Smart Home Control", "items": ["Home Assistant", "Matter", "Tuya Integration", "Smart Breakers", "Smart Switch Modules", "AC Control", "Socket Control", "Light Control"] },
+    { "group": "ESP32 Firmware", "items": ["ESP32", "Arduino Framework", "WiFi", "HTTPClient", "WebServer", "Preferences", "ESPmDNS", "I2C"] },
+    { "group": "Hardware & Sensors", "items": ["Smart Breakers", "Socket", "Smart Light Switch", "Matter Switch Module", "PIR Motion Sensor", "MQ-2 Smoke/Gas Sensor", "AHT21 Temperature/Humidity", "ENS160 Air Quality", "Light Sensor", "Sound Sensor", "LED Strip Light", "Dashboard Screen", "AC/DC Converter", "DC 24V Fan"] }
+  ],
+  "team": [
+    { "name": "Ali Abdulhussain Abdali", "id": "202200578", "role": "Project Member", "phone": "+973 37798824", "image": "/ali-abdulhussain-abdali.jpg", "githubUrl": "https://github.com/3xoob", "linkedinUrl": "https://www.linkedin.com/in/aliabdulhussain3" },
+    { "name": "Nasser Hussain Salman", "id": "202206918", "role": "Project Member", "phone": "+973 37223372", "image": "/nasser-hussain-salman.jpg", "imagePosition": "center 8%", "githubUrl": "https://github.com/nxsoos", "linkedinUrl": "https://www.linkedin.com/in/nasser-hussain-b94a972a2" },
+    { "name": "S. Salman Adnan Abdullah", "id": "202201576", "role": "Project Member", "phone": "+973 33300410", "image": "/s-salman-adnan-abdullah.jpg", "githubUrl": "https://github.com/Sayed-Salman", "linkedinUrl": "https://www.linkedin.com/in/sayed-salman-sharaf-0b783b341" }
+  ],
+  "teamLabels": {
+    "id": "University ID",
+    "phone": "Phone"
+  },
+  "contact": {
+    "emailLabel": "Email",
+    "emailValue": "admin@kahrabaiq.com",
+    "nameLabel": "Name",
+    "namePlaceholder": "Your name",
+    "emailInputLabel": "Email",
+    "emailPlaceholder": "you@example.com",
+    "messageLabel": "Message",
+    "messagePlaceholder": "Tell us what you want to explore",
+    "submit": "Send Message",
+    "sending": "Sending...",
+    "success": "Message sent successfully.",
+    "error": "Something went wrong. Please try again."
+  },
+  "mockup": {
+    "live": "KAHRABAIQ LIVE",
+    "safe": "98.7% SAFE",
+    "chartBars": [36, 58, 44, 75, 52, 88, 64, 72],
+    "metrics": [
+      { "label": "Load", "value": "2.4 kW" },
+      { "label": "Rooms", "value": "06 Active" },
+      { "label": "Risk", "value": "Low" }
+    ],
+    "devices": [
+      { "name": "Lab A lighting", "state": "On", "tone": "normal" },
+      { "name": "HVAC relay", "state": "On", "tone": "normal" },
+      { "name": "Smoke node", "state": "Watch", "tone": "warn" }
+    ],
+    "phoneLabel": "Home Safety",
+    "phoneStatus": "All Systems Armed",
+    "phoneScore": "82%",
+    "phoneItems": [
+      { "label": "Energy Mode", "value": "Eco AI" },
+      { "label": "Emergency", "value": "Ready" },
+      { "label": "Occupancy", "value": "Detected" }
+    ],
+    "hardwareLabel": "Hardware Prototype",
+    "hardwareChip": "LIVE BUILD",
+    "hardwareImageAlt": "KahrabaIQ physical prototype with Raspberry Pi, smart breaker, Matter switch modules, dashboard screen, socket, and LED strip"
+  },
+  "social": {
+    "linkedin": "LinkedIn",
+    "github": "GitHub",
+    "linkedinUrl": "https://www.linkedin.com",
+    "githubUrl": "https://github.com"
+  },
+  "footer": {
+    "university": "University of Bahrain · 2026",
+    "copyright": "© 2026 KAHRABAIQ. University of Bahrain Senior Project.",
+    "status": "KAHRABAIQ system online",
+    "projectRepo": {
+      "label": "Full project repository",
+      "placeholder": "Link coming soon",
+      "url": ""
+    }
+  },
+  "accessibility": {
+    "skip": "Skip to main content",
+    "home": "KAHRABAIQ home",
+    "nav": "Primary navigation",
+    "navLinks": "Section links",
+    "scrollFeatures": "Scroll to features",
+    "homeStrip": "KAHRABAIQ feature icon strip showing eight system capabilities",
+    "architectureDiagram": "Scrollable system architecture diagram",
+    "chart": "Energy usage bar chart"
+  }
+}
