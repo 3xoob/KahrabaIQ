@@ -1,4 +1,4 @@
-package com.example.smart_energy_app
+package com.example.kahrabaiq
 
 import io.flutter.embedding.android.FlutterActivity
 

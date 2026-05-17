@@ -27,4 +27,4 @@ logs/
 # is accidentally run from a parent directory or copied into another workspace.
 .gradle/
 android/.gradle/
-smart_energy_app/
+KahrabaIQ/

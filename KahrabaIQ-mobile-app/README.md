@@ -18,7 +18,7 @@ flutter pub get
 flutter emulators --launch Pixel_10_Pro
 flutter run
 ```
-cd /c/Nasser/Univirsity/smart-energy-project/smart_energy_app
+cd /c/Nasser/Univirsity/smart-energy-project/KahrabaIQ
 
 flutter run `
   --dart-define="KAHRABAIQ_API_URL=http://52.210.115.88" `

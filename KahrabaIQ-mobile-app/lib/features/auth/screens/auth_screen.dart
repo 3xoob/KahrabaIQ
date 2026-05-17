@@ -15,8 +15,7 @@ class AuthScreen extends StatefulWidget {
   State<AuthScreen> createState() => _AuthScreenState();
 }
 
-class _AuthScreenState extends State<AuthScreen>
-    with SingleTickerProviderStateMixin {
+class _AuthScreenState extends State<AuthScreen> {
   static const _pendingEmailKey = 'kahrabaiq.pending_confirmation_email';
 
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
@@ -30,7 +29,6 @@ class _AuthScreenState extends State<AuthScreen>
   final FocusNode _emailFocusNode = FocusNode();
   final FocusNode _passwordFocusNode = FocusNode();
   final FocusNode _verificationCodeFocusNode = FocusNode();
-  late final AnimationController _logoController;
   AuthMode _mode = AuthMode.login;
   bool _isBusy = false;
   String? _message;
@@ -40,16 +38,11 @@ class _AuthScreenState extends State<AuthScreen>
   @override
   void initState() {
     super.initState();
-    _logoController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 8),
-    )..repeat();
     _restorePendingConfirmation();
   }
 
   @override
   void dispose() {
-    _logoController.dispose();
     _nameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
@@ -92,7 +85,6 @@ class _AuthScreenState extends State<AuthScreen>
                   constraints.maxHeight - topPadding - bottomPadding;
               final contentMinHeight = minHeight < 0 ? 0.0 : minHeight;
               final logoGap = compact ? 8.0 : 12.0;
-              final animationGap = compact ? 14.0 : 18.0;
               final titleGap = compact ? 20.0 : 24.0;
               final tabsGap = compact ? 14.0 : 18.0;
               final submitGap = compact ? 16.0 : 18.0;
@@ -103,12 +95,7 @@ class _AuthScreenState extends State<AuthScreen>
                 physics: keyboardOpen
                     ? const ClampingScrollPhysics()
                     : const NeverScrollableScrollPhysics(),
-                padding: EdgeInsets.fromLTRB(
-                  24,
-                  topPadding,
-                  24,
-                  bottomPadding,
-                ),
+                padding: EdgeInsets.fromLTRB(24, topPadding, 24, bottomPadding),
                 child: ConstrainedBox(
                   constraints: BoxConstraints(minHeight: contentMinHeight),
                   child: Align(
@@ -122,11 +109,6 @@ class _AuthScreenState extends State<AuthScreen>
                           children: [
                             AuthHeader(screenHeight: viewportHeight),
                             SizedBox(height: logoGap),
-                            ElectricityAnimation(
-                              controller: _logoController,
-                              screenHeight: viewportHeight,
-                            ),
-                            SizedBox(height: animationGap),
                             _AuthTitle(title: title, subtitle: subtitle),
                             SizedBox(height: titleGap),
                             if (!isVerifying) ...[

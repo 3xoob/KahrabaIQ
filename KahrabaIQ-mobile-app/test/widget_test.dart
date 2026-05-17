@@ -8,7 +8,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/material.dart';
 
-import 'package:smart_energy_app/features/auth/screens/auth_screen.dart';
+import 'package:kahrabaiq/features/auth/screens/auth_screen.dart';
 
 void main() {
   testWidgets('Auth screen displays login entry point', (
