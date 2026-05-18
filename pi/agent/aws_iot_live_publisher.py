@@ -13,6 +13,14 @@ from dotenv import load_dotenv
 from local_state_store import home_snapshot, latest_history, set_path
 from timestamp_utils import BAHRAIN_TZ, TIMEZONE, ms_to_iso, now_ms
 
+try:
+    from local_command_controller import sync_home_assistant_device_states
+except Exception as error:  # pragma: no cover - keeps publisher alive if HA deps are missing.
+    sync_home_assistant_device_states = None
+    _LOCAL_HA_SYNC_IMPORT_ERROR = error
+else:
+    _LOCAL_HA_SYNC_IMPORT_ERROR = None
+
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env.local")
 load_dotenv()
@@ -650,6 +658,8 @@ def main() -> int:
         f"Started for {HOME_ID}; topic={AWS_IOT_LIVE_TOPIC}; "
         f"endpoint={AWS_IOT_ENDPOINT}; interval={AWS_IOT_LIVE_INTERVAL_SECONDS}s"
     )
+    if sync_home_assistant_device_states is None:
+        log(f"Home Assistant state sync unavailable in live publisher: {_LOCAL_HA_SYNC_IMPORT_ERROR}")
     connection, mqtt = create_connection()
     connection.connect().result()
     log("Connected to AWS IoT Core")
@@ -657,6 +667,11 @@ def main() -> int:
     try:
         while True:
             started = time.time()
+            if sync_home_assistant_device_states is not None:
+                try:
+                    sync_home_assistant_device_states()
+                except Exception as error:
+                    log(f"Home Assistant state sync failed before live publish: {error}")
             payload = build_live_payload()
             encoded = json.dumps(payload, separators=(",", ":"), default=str)
             wait_for_publish(
