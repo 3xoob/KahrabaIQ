@@ -176,7 +176,15 @@
     ],
     "hardwareLabel": "Hardware Prototype",
     "hardwareChip": "LIVE BUILD",
-    "hardwareImageAlt": "KahrabaIQ physical prototype with Raspberry Pi, smart breaker, Matter switch modules, dashboard screen, socket, and LED strip"
+    "hardwareImageAlt": "KahrabaIQ physical prototype with Raspberry Pi, smart breaker, Matter switch modules, dashboard screen, socket, and LED strip",
+    "mobilePrototypeLabel": "Mobile App Prototype",
+    "mobilePrototypeChip": "APP FLOW",
+    "mobilePrototypeImages": [
+      { "src": "/mobile-prototype-1.jpg", "alt": "KahrabaIQ mobile app prototype screen 1" },
+      { "src": "/mobile-prototype-2.jpg", "alt": "KahrabaIQ mobile app prototype screen 2" },
+      { "src": "/mobile-prototype-3.jpg", "alt": "KahrabaIQ mobile app prototype screen 3" },
+      { "src": "/mobile-prototype-4.jpg", "alt": "KahrabaIQ mobile app prototype screen 4" }
+    ]
   },
   "social": {
     "linkedin": "LinkedIn",
