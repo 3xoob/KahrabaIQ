@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request, send_from_directory
 
 from local_state_store import get_path, home_snapshot, set_path
+from timestamp_utils import ms_to_iso
 try:
     from local_command_controller import (
         execute_local_command,
@@ -394,6 +395,41 @@ def kiosk_dashboard_data() -> dict[str, Any]:
     if not response.ok or data.get("success") is False:
         raise RuntimeError(data.get("detail") or data.get("message") or response.text)
     return data
+
+
+def local_dashboard_payload() -> dict[str, Any]:
+    live = build_live_state()
+    dashboard = live.get("dashboard") if isinstance(live.get("dashboard"), dict) else {}
+    energy = live.get("energy") if isinstance(live.get("energy"), dict) else {}
+    room = live.get("room") if isinstance(live.get("room"), dict) else {}
+    devices = live.get("devices") if isinstance(live.get("devices"), dict) else {}
+    alerts = live.get("alerts") if isinstance(live.get("alerts"), list) else []
+    notifications = live.get("notifications") if isinstance(live.get("notifications"), list) else []
+    occupancy = live.get("occupancy") if isinstance(live.get("occupancy"), dict) else {}
+    safety = live.get("safety") if isinstance(live.get("safety"), dict) else {}
+    timestamp_ms = int(live.get("updated_at_ms") or live.get("timestamp_ms") or now_ms())
+    return {
+        "success": True,
+        "source": "raspberry_pi_local_state",
+        "pi_id": PI_ID,
+        "home_id": live.get("home_id") or HOME_ID or "home_001",
+        "paired": bool(HOME_ID or live.get("home_id")),
+        "dashboard": {
+            **dashboard,
+            "energy": energy,
+            "room": room,
+            "devices": devices,
+            "alerts": alerts,
+            "notifications": notifications,
+            "ai_notifications": dashboard.get("ai_notifications", []),
+            "occupancy": occupancy,
+            "safety": safety,
+            "updated_at_ms": timestamp_ms,
+            "updated_at_iso": ms_to_iso(timestamp_ms),
+        },
+        "updated_at_ms": timestamp_ms,
+        "updated_at_iso": ms_to_iso(timestamp_ms),
+    }
 
 
 def kiosk_home_invite_qr() -> dict[str, Any]:
@@ -1288,6 +1324,16 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       return `${fmt.format(parsed)}${suffix}`;
     }
 
+    function energyText(kwh) {
+      if (kwh === null || kwh === undefined || kwh === "") return "--";
+      const parsed = Number(kwh);
+      if (!Number.isFinite(parsed)) return String(kwh);
+      if (parsed > 0 && parsed < 1) {
+        return `${fmt.format(parsed * 1000)} Wh`;
+      }
+      return `${fmt.format(parsed)} kWh`;
+    }
+
     function currentSensorValue(online, value, suffix = "") {
       return online ? valueOrDash(value, suffix) : "Unavailable";
     }
@@ -1348,7 +1394,7 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       text("statusText", data.paired ? "Live" : "Unpaired");
       text("energyTimestamp", timestampText(energy.timestampMs || energy.timestamp_ms || dashboard.updated_at_ms));
       text("power", fmt.format(number(energy.currentPowerW ?? energy.powerW)));
-      text("energyToday", `${fmt.format(number(energy.energyTodayKwh ?? energy.totalEnergyKwh))} kWh`);
+      text("energyToday", energyText(energy.energyTodayKwh ?? energy.totalEnergyKwh));
       text("costToday", `${number(energy.costToday).toFixed(3)} BD`);
       text("breakerCount", `${activeBreakers}/${breakers.length || 0}`);
       text("roomStatus", sensorOnline ? "Online" : room.stale ? "Stale" : "Offline");
@@ -1378,7 +1424,7 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
             ? `
               <div class="two-col">
                 <div><div class="label">Power</div><div class="small-value">${valueOrDash(device.power_W, " W")}</div></div>
-                <div><div class="label">Energy</div><div class="small-value">${valueOrDash(device.energy_kWh, " kWh")}</div></div>
+                <div><div class="label">Energy</div><div class="small-value">${energyText(device.energy_kWh)}</div></div>
                 <div><div class="label">Voltage</div><div class="small-value">${valueOrDash(device.voltage_V, " V")}</div></div>
                 <div><div class="label">Current</div><div class="small-value">${valueOrDash(device.current_A, " A")}</div></div>
               </div>
@@ -1813,9 +1859,15 @@ def kiosk_session() -> Any:
 @app.get("/api/kiosk/dashboard-data")
 def local_kiosk_dashboard_data() -> Any:
     try:
-        if sync_home_assistant_device_states is not None:
+        refresh = str(request.args.get("refresh") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if refresh and sync_home_assistant_device_states is not None:
             sync_home_assistant_device_states(force=True)
-        return jsonify(kiosk_dashboard_data())
+        return jsonify(local_dashboard_payload())
     except Exception as error:
         return jsonify({"success": False, "message": str(error)}), 503
 
