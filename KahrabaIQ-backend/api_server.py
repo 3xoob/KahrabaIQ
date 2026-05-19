@@ -84,11 +84,23 @@ DASHBOARD_INVITE_TTL_MS = int(os.environ.get("DASHBOARD_INVITE_TTL_SECONDS", "60
 KIOSK_SESSION_TTL_SECONDS = int(os.environ.get("KIOSK_SESSION_TTL_SECONDS", "600"))
 KIOSK_COMMAND_TTL_SECONDS = int(os.environ.get("KIOSK_COMMAND_TTL_SECONDS", "300"))
 KIOSK_SESSION_SECRET = os.environ.get("KIOSK_SESSION_SECRET") or os.environ.get("INTERNAL_SERVICE_TOKEN") or "dev-kiosk-session-secret"
-KIOSK_ALLOWED_COMMANDS = {"provision_esp32", "discover_esp32", "reset_esp32"}
+KIOSK_ALLOWED_COMMANDS = {
+    "provision_esp32",
+    "discover_esp32",
+    "reset_esp32",
+    "device_command",
+    "get_status",
+    "get_logs",
+    "restart_dashboard",
+    "exit_kiosk",
+    "start_kiosk",
+    "start_maintenance",
+}
 DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
 DASHBOARD_SESSION_COOKIE = "kahrabaiq_dashboard_session"
 DASHBOARD_ALLOWED_HEARTBEAT_AGE_SECONDS = int(os.environ.get("DASHBOARD_ALLOWED_HEARTBEAT_AGE_SECONDS", "900"))
 DASHBOARD_ACCESS_DEFAULT_ENABLED = os.environ.get("DASHBOARD_ACCESS_DEFAULT_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+DASHBOARD_OPEN_ACCESS = os.environ.get("DASHBOARD_OPEN_ACCESS", "true").strip().lower() in {"1", "true", "yes", "on"}
 MATTER_DEVICE_IDS = {"matter_socket_switch", "matter_ac_switch", "light_switch"}
 DEVICE_ALIASES = {
     "ac_breaker": "breaker_01",
@@ -1761,8 +1773,45 @@ def require_dashboard_ip_access_locked(request: Request) -> dict[str, Any]:
 
 
 def require_dashboard_pi_access(request: Request) -> dict[str, Any]:
+    if DASHBOARD_OPEN_ACCESS:
+        return require_dashboard_ip_access(request)
     access = require_dashboard_ip_access(request)
     return {**access, "kiosk_session_id": "ip_only"}
+
+
+def queue_dashboard_pi_command(request: Request, command_name: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    if command_name not in KIOSK_ALLOWED_COMMANDS:
+        raise HTTPException(status_code=400, detail="Unsupported kiosk command.")
+    access = require_dashboard_pi_access(request)
+    timestamp_ms = now_ms()
+    command_id = f"dashcmd_{timestamp_ms}_{secrets.token_hex(4)}"
+    command = {
+        "id": command_id,
+        "command_id": command_id,
+        "pi_id": access["pi_id"],
+        "home_id": access.get("home_id") or "",
+        "command": command_name,
+        "payload": payload or {},
+        "status": "pending",
+        "created_by": "cloud_dashboard",
+        "created_at_ms": timestamp_ms,
+        "created_at_iso": iso_from_ms(timestamp_ms),
+        "expires_at_ms": timestamp_ms + (KIOSK_COMMAND_TTL_SECONDS * 1000),
+    }
+    safe_set(f"/pi_commands/{access['pi_id']}/{command_id}", command)
+    return command
+
+
+def dashboard_pi_command(request: Request, command_id: str) -> dict[str, Any]:
+    access = require_dashboard_pi_access(request)
+    command = as_dict(safe_get(f"/pi_commands/{access['pi_id']}/{command_id}", {}))
+    if not command:
+        raise HTTPException(status_code=404, detail="Command does not exist.")
+    if command.get("status") == "pending" and as_number(command.get("expires_at_ms")) and as_number(command.get("expires_at_ms")) < now_ms():
+        updates = {"status": "expired", "updated_at_ms": now_ms(), "updated_at_iso": iso_from_ms(now_ms())}
+        safe_update(f"/pi_commands/{access['pi_id']}/{command_id}", updates)
+        command.update(updates)
+    return command
 
 
 def command_status_payload(item: dict[str, Any]) -> dict[str, Any]:
@@ -5169,6 +5218,97 @@ def dashboard_state(request: Request) -> dict[str, Any]:
         "updated_at_ms": payload["updated_at_ms"],
         "updated_at_iso": payload["updated_at_iso"],
     }
+
+
+@app.get("/api/dashboard/kiosk/dashboard-data")
+def dashboard_kiosk_data(request: Request) -> dict[str, Any]:
+    access = require_dashboard_pi_access(request)
+    return {
+        "success": True,
+        "pi_id": access["pi_id"],
+        "home_id": access.get("home_id") or None,
+        "paired": bool(access.get("home_id")),
+        "dashboard": dashboard_latest_state(access),
+    }
+
+
+@app.post("/api/dashboard/kiosk/home-invite-qr")
+def dashboard_kiosk_home_invite_qr(request: Request) -> dict[str, Any]:
+    access = require_dashboard_pi_access(request)
+    return create_dashboard_home_invite(str(access.get("home_id") or ""))
+
+
+@app.post("/api/dashboard/kiosk/device-command")
+def dashboard_kiosk_device_command(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
+    device_id = str(payload.get("device_id") or "").strip()
+    command = str(payload.get("command") or "").strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="device_id is required.")
+    if command not in {"turn_on", "turn_off"}:
+        raise HTTPException(status_code=400, detail="Unsupported command.")
+    queued = queue_dashboard_pi_command(request, "device_command", {"device_id": device_id, "command": command})
+    return {"success": True, "queued": True, "command": queued, "command_id": queued["command_id"]}
+
+
+@app.get("/api/dashboard/commands/{command_id}")
+def dashboard_command_status(request: Request, command_id: str) -> dict[str, Any]:
+    return {"success": True, "command": dashboard_pi_command(request, command_id)}
+
+
+@app.post("/api/dashboard/admin/login")
+def dashboard_admin_login() -> dict[str, Any]:
+    return {"success": True, "auth_source": "open_cloud_dashboard", "token": "open-cloud-dashboard", "expires_at_ms": now_ms() + 86400000}
+
+
+@app.post("/api/dashboard/admin/logout")
+def dashboard_admin_logout() -> dict[str, Any]:
+    return {"success": True}
+
+
+@app.get("/api/dashboard/admin/session")
+def dashboard_admin_session() -> dict[str, Any]:
+    return {"success": True, "authenticated": True, "expires_at_ms": now_ms() + 86400000}
+
+
+@app.post("/api/dashboard/admin/lock")
+def dashboard_admin_lock() -> dict[str, Any]:
+    return {"success": True, "locked": True}
+
+
+@app.get("/api/dashboard/admin/status")
+def dashboard_admin_status(request: Request) -> dict[str, Any]:
+    queued = queue_dashboard_pi_command(request, "get_status")
+    return {"success": True, "queued": True, "command": queued, "command_id": queued["command_id"]}
+
+
+@app.get("/api/dashboard/admin/logs")
+def dashboard_admin_logs(request: Request, lines: int = Query(180, ge=1, le=500)) -> dict[str, Any]:
+    queued = queue_dashboard_pi_command(request, "get_logs", {"lines": lines})
+    return {"success": True, "queued": True, "command": queued, "command_id": queued["command_id"]}
+
+
+@app.post("/api/dashboard/admin/maintenance/start")
+def dashboard_admin_start_maintenance(request: Request) -> dict[str, Any]:
+    queued = queue_dashboard_pi_command(request, "start_maintenance")
+    return {"success": True, "queued": True, "command": queued, "command_id": queued["command_id"]}
+
+
+@app.post("/api/dashboard/admin/services/restart-dashboard")
+def dashboard_admin_restart_dashboard(request: Request) -> dict[str, Any]:
+    queued = queue_dashboard_pi_command(request, "restart_dashboard")
+    return {"success": True, "queued": True, "command": queued, "command_id": queued["command_id"]}
+
+
+@app.post("/api/dashboard/admin/kiosk/exit")
+def dashboard_admin_exit_kiosk(request: Request) -> dict[str, Any]:
+    queued = queue_dashboard_pi_command(request, "exit_kiosk")
+    return {"success": True, "queued": True, "command": queued, "command_id": queued["command_id"]}
+
+
+@app.post("/api/dashboard/admin/kiosk/start")
+def dashboard_admin_start_kiosk(request: Request) -> dict[str, Any]:
+    queued = queue_dashboard_pi_command(request, "start_kiosk")
+    return {"success": True, "queued": True, "command": queued, "command_id": queued["command_id"]}
 
 
 @app.post("/api/dashboard/home-invite")

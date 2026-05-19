@@ -176,7 +176,15 @@
     ],
     "hardwareLabel": "النموذج العتادي",
     "hardwareChip": "النموذج الفعلي",
-    "hardwareImageAlt": "النموذج العتادي الفعلي لكهرباء آي كيو مع Raspberry Pi وقاطع ذكي ووحدات Matter وشاشة لوحة التحكم ومقبس وشريط إضاءة"
+    "hardwareImageAlt": "النموذج العتادي الفعلي لكهرباء آي كيو مع Raspberry Pi وقاطع ذكي ووحدات Matter وشاشة لوحة التحكم ومقبس وشريط إضاءة",
+    "mobilePrototypeLabel": "نموذج تطبيق الهاتف",
+    "mobilePrototypeChip": "تدفق التطبيق",
+    "mobilePrototypeImages": [
+      { "src": "/mobile-prototype-1.jpg", "alt": "الشاشة الأولى من نموذج تطبيق كهرباء آي كيو" },
+      { "src": "/mobile-prototype-2.jpg", "alt": "الشاشة الثانية من نموذج تطبيق كهرباء آي كيو" },
+      { "src": "/mobile-prototype-3.jpg", "alt": "الشاشة الثالثة من نموذج تطبيق كهرباء آي كيو" },
+      { "src": "/mobile-prototype-4.jpg", "alt": "الشاشة الرابعة من نموذج تطبيق كهرباء آي كيو" }
+    ]
   },
   "social": {
     "linkedin": "LinkedIn",

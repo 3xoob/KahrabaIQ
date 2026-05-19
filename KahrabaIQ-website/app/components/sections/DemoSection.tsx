@@ -25,20 +25,6 @@ function DashboardMockup({ content }: { content: SiteContent }) {
   );
 }
 
-function MobileMockup({ content }: { content: SiteContent }) {
-  return (
-    <Frame className="phone-frame">
-      <div className="phone-shell">
-        <div className="phone-notch" />
-        <span className="phone-label">{content.mockup.phoneLabel}</span>
-        <strong>{content.mockup.phoneStatus}</strong>
-        <div className="ring-meter" style={{ "--phone-score": content.mockup.phoneScore } as React.CSSProperties}><span>{content.mockup.phoneScore}</span></div>
-        <div className="phone-list">{content.mockup.phoneItems.map((item) => <p key={item.label}>{item.label} <b>{item.value}</b></p>)}</div>
-      </div>
-    </Frame>
-  );
-}
-
 function HardwareMockup({ label, chip, imageAlt }: { label: string; chip: string; imageAlt: string }) {
   return (
     <Frame className="hardware-frame">
@@ -53,6 +39,24 @@ function HardwareMockup({ label, chip, imageAlt }: { label: string; chip: string
   );
 }
 
+function MobilePrototypeGallery({ content }: { content: SiteContent }) {
+  return (
+    <Frame className="mobile-prototype-frame">
+      <div className="hardware-caption">
+        <span className="chip">{content.mockup.mobilePrototypeChip}</span>
+        <strong>{content.mockup.mobilePrototypeLabel}</strong>
+      </div>
+      <div className="mobile-prototype-grid">
+        {content.mockup.mobilePrototypeImages.map((image, index) => (
+          <div className="app-screen" key={image.src} style={{ "--screen-offset": index } as React.CSSProperties}>
+            <Image src={image.src} alt={image.alt} fill sizes="(max-width: 768px) 44vw, 18vw" className="app-screen-image" />
+          </div>
+        ))}
+      </div>
+    </Frame>
+  );
+}
+
 export function DemoSection({ content }: { content: SiteContent }) {
   return (
     <section id="demo" className="section showcase" aria-labelledby="demo-title">
@@ -60,8 +64,8 @@ export function DemoSection({ content }: { content: SiteContent }) {
         <SectionHeader {...content.sections.demo} id="demo-title" />
         <div className="showcase-grid">
           <DashboardMockup content={content} />
-          <MobileMockup content={content} />
           <HardwareMockup label={content.mockup.hardwareLabel} chip={content.mockup.hardwareChip} imageAlt={content.mockup.hardwareImageAlt} />
+          <MobilePrototypeGallery content={content} />
         </div>
       </div>
     </section>

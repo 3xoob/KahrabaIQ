@@ -557,9 +557,96 @@ def reset_pairing(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def local_admin_status_payload() -> dict[str, Any]:
+    return {
+        "pi_id": PI_ID,
+        "home_id": HOME_ID,
+        "local_ip": local_ip(),
+        "wifi_ssid": current_wifi_ssid(),
+        "provisioned": PROVISIONING_MARKER_PATH.exists(),
+        "provisioning_marker_path": str(PROVISIONING_MARKER_PATH),
+        "agent_state": dict(_agent_state),
+        "esp32": esp32_link(),
+    }
+
+
+def local_admin_start_maintenance_payload() -> dict[str, Any]:
+    commands = [
+        run_admin_command(["sudo", "-n", "/usr/bin/systemctl", "stop", "kahrabaiq-kiosk-browser.service"], timeout=20),
+        run_admin_command(["sudo", "-n", "/usr/bin/rm", "-f", str(PROVISIONING_MARKER_PATH)], timeout=10),
+        run_admin_command(["sudo", "-n", "/usr/bin/systemctl", "start", "kahrabaiq-provisioning.service"], timeout=20),
+        run_admin_command(["sudo", "-n", "/usr/bin/systemctl", "start", "kahrabaiq-setup-screen.service"], timeout=20),
+    ]
+    return {"success": all(item["success"] for item in commands), "commands": commands}
+
+
+def local_admin_restart_dashboard_payload() -> dict[str, Any]:
+    command = run_admin_command(["sudo", "-n", "/usr/bin/systemctl", "restart", "kahrabaiq-kiosk-browser.service"], timeout=20)
+    return {"success": command["success"], "command": command}
+
+
+def local_admin_exit_kiosk_payload() -> dict[str, Any]:
+    commands = [
+        run_admin_command(["sudo", "-n", "/usr/bin/systemctl", "stop", "kahrabaiq-kiosk-browser.service"], timeout=20),
+        run_admin_command(["sudo", "-n", "/usr/bin/systemctl", "stop", "kahrabaiq-setup-screen.service"], timeout=20),
+    ]
+    return {
+        "success": all(item["success"] for item in commands),
+        "message": "Kiosk stopped. Raspberry Pi OS desktop is available if the session is unlocked.",
+        "commands": commands,
+    }
+
+
+def local_admin_start_kiosk_payload() -> dict[str, Any]:
+    provisioned = PROVISIONING_MARKER_PATH.exists()
+    service = "kahrabaiq-kiosk-browser.service" if provisioned else "kahrabaiq-setup-screen.service"
+    command = run_admin_command(["sudo", "-n", "/usr/bin/systemctl", "start", service], timeout=20)
+    return {"success": command["success"], "mode": "dashboard" if provisioned else "setup", "command": command}
+
+
+def local_device_command_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if execute_local_command is None:
+        raise RuntimeError("Local command controller is not available.")
+    device_id = str(payload.get("device_id") or "").strip()
+    command = str(payload.get("command") or "").strip()
+    if not device_id:
+        raise RuntimeError("device_id is required.")
+    if command not in {"turn_on", "turn_off"}:
+        raise RuntimeError("Unsupported command.")
+    if sync_home_assistant_device_states is not None:
+        sync_home_assistant_device_states(force=True)
+    result = execute_local_command(
+        device_id,
+        command,
+        requested_by="cloud_dashboard",
+        source="cloud_dashboard",
+    )
+    if not result.get("success"):
+        raise RuntimeError(result.get("message") or "Device command failed.")
+    return result
+
+
 def execute_command(command: dict[str, Any]) -> dict[str, Any]:
     name = str(command.get("command") or "")
     payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
+    if name == "device_command":
+        return local_device_command_payload(payload)
+    if name == "get_status":
+        return local_admin_status_payload()
+    if name == "get_logs":
+        try:
+            lines = int(payload.get("lines", 180))
+        except (TypeError, ValueError):
+            lines = 180
+        return read_service_logs(max(1, min(lines, 500)))
+    if name == "restart_dashboard":
+        return local_admin_restart_dashboard_payload()
+    if name == "exit_kiosk":
+        return local_admin_exit_kiosk_payload()
+    if name == "start_kiosk":
+        return local_admin_start_kiosk_payload()
+    if name == "start_maintenance":
+        return local_admin_start_maintenance_payload()
     if name == "provision_esp32":
         return provision_esp32(payload)
     if name == "discover_esp32":
