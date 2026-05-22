@@ -223,6 +223,73 @@ const char* MANUAL_PI_SENSOR_URL = "";
   // =====================================
   // Wi-Fi
   // =====================================
+  String wifiStatusName(wl_status_t status) {
+    switch (status) {
+      case WL_IDLE_STATUS: return "IDLE";
+      case WL_NO_SSID_AVAIL: return "NO_SSID_AVAILABLE";
+      case WL_SCAN_COMPLETED: return "SCAN_COMPLETED";
+      case WL_CONNECTED: return "CONNECTED";
+      case WL_CONNECT_FAILED: return "CONNECT_FAILED";
+      case WL_CONNECTION_LOST: return "CONNECTION_LOST";
+      case WL_DISCONNECTED: return "DISCONNECTED";
+      default: return "UNKNOWN_" + String((int)status);
+    }
+  }
+
+  String encryptionTypeName(wifi_auth_mode_t encryptionType) {
+    switch (encryptionType) {
+      case WIFI_AUTH_OPEN: return "OPEN";
+      case WIFI_AUTH_WEP: return "WEP";
+      case WIFI_AUTH_WPA_PSK: return "WPA";
+      case WIFI_AUTH_WPA2_PSK: return "WPA2";
+      case WIFI_AUTH_WPA_WPA2_PSK: return "WPA/WPA2";
+      case WIFI_AUTH_WPA2_ENTERPRISE: return "WPA2_ENTERPRISE";
+      case WIFI_AUTH_WPA3_PSK: return "WPA3";
+      case WIFI_AUTH_WPA2_WPA3_PSK: return "WPA2/WPA3";
+      default: return "UNKNOWN";
+    }
+  }
+
+  void scanForConfiguredNetwork() {
+    Serial.println("Scanning Wi-Fi networks...");
+    int networkCount = WiFi.scanNetworks();
+    if (networkCount <= 0) {
+      Serial.println("No Wi-Fi networks found by ESP32.");
+      return;
+    }
+
+    bool found = false;
+    for (int i = 0; i < networkCount; i++) {
+      String ssid = WiFi.SSID(i);
+      if (ssid == wifiSsid) {
+        found = true;
+        Serial.print("Found configured SSID. RSSI=");
+        Serial.print(WiFi.RSSI(i));
+        Serial.print(" dBm, channel=");
+        Serial.print(WiFi.channel(i));
+        Serial.print(", auth=");
+        Serial.println(encryptionTypeName(WiFi.encryptionType(i)));
+      }
+    }
+
+    if (!found) {
+      Serial.print("Configured SSID not visible to ESP32: ");
+      Serial.println(wifiSsid);
+      Serial.println("ESP32 can only join 2.4 GHz Wi-Fi. Check that the router is broadcasting this SSID on 2.4 GHz.");
+      Serial.println("Visible SSIDs:");
+      for (int i = 0; i < networkCount; i++) {
+        Serial.print(" - ");
+        Serial.print(WiFi.SSID(i));
+        Serial.print(" RSSI=");
+        Serial.print(WiFi.RSSI(i));
+        Serial.print(" channel=");
+        Serial.print(WiFi.channel(i));
+        Serial.print(" auth=");
+        Serial.println(encryptionTypeName(WiFi.encryptionType(i)));
+      }
+    }
+  }
+
   bool connectWiFi() {
     if (WiFi.status() == WL_CONNECTED) return true;
     if (wifiSsid.length() == 0) {
@@ -237,10 +304,12 @@ const char* MANUAL_PI_SENSOR_URL = "";
     Serial.print(" SSID=");
     Serial.println(wifiSsid);
     WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
     WiFi.setAutoReconnect(false);
     WiFi.persistent(false);
-    WiFi.disconnect(false, false);
-    delay(250);
+    WiFi.disconnect(true, true);
+    delay(500);
+    scanForConfiguredNetwork();
     WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
     WiFi.setAutoReconnect(true);
 
@@ -266,6 +335,9 @@ const char* MANUAL_PI_SENSOR_URL = "";
       return true;
     } else {
       Serial.println("Wi-Fi connection failed");
+      Serial.print("Final Wi-Fi status: ");
+      Serial.println(wifiStatusName(WiFi.status()));
+      Serial.println("If the SSID was found but connect failed, check the password and make sure the router allows WPA2 or WPA2/WPA3 mixed mode.");
       return false;
     }
   }
