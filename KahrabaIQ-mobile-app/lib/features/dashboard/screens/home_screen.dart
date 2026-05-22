@@ -46,6 +46,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   static const String _dashboardCachePrefix = 'kahrabaiq.dashboard.cache.';
   static const Duration _optimisticCommandHold = Duration(seconds: 12);
+  static const Duration _liveOfflineTimeout = Duration(seconds: 45);
 
   final KahrabaIqApiService _api = KahrabaIqApiService();
   String? _homeId;
@@ -54,7 +55,10 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isPlatformAdmin = false;
   DashboardData? _dashboard;
   StreamSubscription<DashboardData>? _liveSubscription;
+  Timer? _liveOfflineTimer;
+  DateTime? _lastLiveDashboardAt;
   bool _isLoading = true;
+  bool _isResolvingHomeAccess = true;
   bool _isPairing = false;
   String? _error;
   String? _dashboardNotice;
@@ -77,6 +81,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _liveOfflineTimer?.cancel();
     _liveSubscription?.cancel();
     super.dispose();
   }
@@ -86,6 +91,7 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _dashboard = _selectedDemoScenario!.dashboard;
         _isLoading = false;
+        _isResolvingHomeAccess = false;
         _error = null;
         _dashboardNotice =
             'Simulation Mode is active. Live home data and device control are paused.';
@@ -93,6 +99,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     await _liveSubscription?.cancel();
+    _liveOfflineTimer?.cancel();
     if (_dashboard == null) {
       final cached = await _loadCachedDashboard();
       if (mounted && cached != null) {
@@ -104,12 +111,13 @@ class _HomeScreenState extends State<HomeScreen> {
         );
         setState(() {
           _dashboard = cachedForDisplay;
-          _isLoading = false;
+          _isLoading = !NetworkConfig.useCognitoAuth;
           _dashboardNotice = _feedPauseNotice(cachedForDisplay);
         });
       }
     }
     setState(() {
+      _isResolvingHomeAccess = NetworkConfig.useCognitoAuth;
       _isLoading = _dashboard == null;
       _error = null;
       _dashboardNotice = _dashboard == null
@@ -125,6 +133,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _currentUserUid = null;
         _currentHomeAccess = null;
         _isPlatformAdmin = false;
+        _isResolvingHomeAccess = false;
       });
     } else {
       try {
@@ -139,6 +148,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _currentUserUid = profile.uid;
           _currentHomeAccess = selectedHome;
           _isPlatformAdmin = profile.isPlatformAdmin;
+          _isResolvingHomeAccess = false;
         });
         if (pairedHomeId == null || pairedHomeId.isEmpty) {
           setState(() {
@@ -155,11 +165,24 @@ class _HomeScreenState extends State<HomeScreen> {
         }
         setState(() {
           _isLoading = false;
+          _isResolvingHomeAccess = false;
           _error =
               'Could not load your home pairing. Please sign in again or check the backend connection.';
         });
         return;
       }
+    }
+
+    if (widget.enableRealtimeSync && NetworkConfig.useAwsIotLive) {
+      debugPrint('[KahrabaIQ IOT LIVE] subscribing before EC2 snapshot');
+      _lastLiveDashboardAt = DateTime.now();
+      _scheduleLiveOfflineWatch();
+      _liveSubscription = _api
+          .watchLiveDashboardData(homeId: pairedHomeId)
+          .listen(
+            (dashboard) => _applyDashboardData(dashboard, fromLive: true),
+            onError: _handleLiveError,
+          );
     }
 
     try {
@@ -181,6 +204,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (_dashboard != null) {
         setState(() {
           _isLoading = false;
+          _isResolvingHomeAccess = false;
           _dashboardNotice =
               'Could not refresh from EC2. Showing the latest saved dashboard data.';
         });
@@ -188,27 +212,30 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       setState(() {
         _isLoading = false;
+        _isResolvingHomeAccess = false;
         _error =
             'Could not load the latest dashboard. Please check the backend connection and try again.';
       });
     }
-
-    if (widget.enableRealtimeSync && NetworkConfig.useAwsIotLive) {
-      debugPrint('[KahrabaIQ IOT LIVE] subscribing after EC2 snapshot');
-      _liveSubscription = _api
-          .watchLiveDashboardData(homeId: pairedHomeId)
-          .listen(_applyDashboardData, onError: _handleLiveError);
-    }
   }
 
-  void _applyDashboardData(DashboardData dashboard) {
+  void _applyDashboardData(DashboardData dashboard, {bool fromLive = false}) {
     if (!mounted) {
       return;
     }
     if (_selectedDemoScenario != null) {
       return;
     }
-    final mergedDashboard = _mergeLiveDashboardData(dashboard);
+    var mergedDashboard = _mergeLiveDashboardData(dashboard);
+    if (fromLive) {
+      _lastLiveDashboardAt = DateTime.now();
+      _scheduleLiveOfflineWatch();
+    } else if (NetworkConfig.useAwsIotLive && _lastLiveDashboardAt != null) {
+      final liveAge = DateTime.now().difference(_lastLiveDashboardAt!);
+      if (liveAge >= _liveOfflineTimeout) {
+        mergedDashboard = _dashboardAsOffline(mergedDashboard, liveAge);
+      }
+    }
     debugPrint(
       '[KahrabaIQ DASHBOARD DISPLAY] '
       'power=${mergedDashboard.reading.power} '
@@ -239,11 +266,80 @@ class _HomeScreenState extends State<HomeScreen> {
         (deviceId, _) => liveDeviceIds.contains(deviceId),
       );
       _isLoading = false;
+      _isResolvingHomeAccess = false;
       _error = null;
       _dashboardNotice = NetworkConfig.useAwsIotLive
           ? _feedPauseNotice(mergedDashboard)
           : null;
     });
+  }
+
+  void _scheduleLiveOfflineWatch() {
+    _liveOfflineTimer?.cancel();
+    _liveOfflineTimer = Timer(_liveOfflineTimeout, _markLiveDashboardOffline);
+  }
+
+  void _markLiveDashboardOffline() {
+    if (!mounted || _selectedDemoScenario != null) {
+      return;
+    }
+    final dashboard = _dashboard;
+    final lastLive = _lastLiveDashboardAt;
+    if (dashboard == null || lastLive == null) {
+      return;
+    }
+    final liveAge = DateTime.now().difference(lastLive);
+    if (liveAge < _liveOfflineTimeout) {
+      _scheduleLiveOfflineWatch();
+      return;
+    }
+    setState(() {
+      _dashboard = _dashboardAsOffline(dashboard, liveAge);
+      _dashboardNotice =
+          'Pi live data stopped ${liveAge.inSeconds}s ago. Showing the hub as offline until fresh data arrives.';
+    });
+  }
+
+  DashboardData _dashboardAsOffline(DashboardData dashboard, Duration liveAge) {
+    final now = DateTime.now();
+    return dashboard.copyWith(
+      reading: EnergyReading(
+        timestamp: now,
+        voltage: 0,
+        current: 0,
+        power: 0,
+        energyToday: dashboard.reading.energyToday,
+        energyMonth: dashboard.reading.energyMonth,
+        energyTotal: dashboard.reading.energyTotal,
+        costToday: dashboard.reading.costToday,
+        costMonth: dashboard.reading.costMonth,
+        monthDataAvailable: dashboard.reading.monthDataAvailable,
+        monthSource: dashboard.reading.monthSource,
+      ),
+      sensors: dashboard.sensors.copyWith(online: false),
+      devices: dashboard.devices
+          .map(
+            (device) => device.copyWith(
+              isOn: false,
+              currentPower: 0,
+              online: false,
+              localOnline: false,
+              stale: true,
+              commandInProgress: false,
+              pendingTargetState: null,
+              statusLabel: 'offline',
+              lastSeenAgeSeconds: liveAge.inSeconds.toDouble(),
+            ),
+          )
+          .toList(),
+      hubStatus: {
+        ...dashboard.hubStatus,
+        'online': false,
+        'stale': true,
+        'status_label': 'offline',
+        'last_seen_age_seconds': liveAge.inSeconds,
+      },
+    );
   }
 
   DashboardData _mergeLiveDashboardData(DashboardData incoming) {
@@ -639,7 +735,18 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     setState(() {
-      _dashboardNotice = _feedPauseNotice(_dashboard!);
+      final dashboard = _dashboard!;
+      final lastLive = _lastLiveDashboardAt;
+      if (lastLive != null &&
+          DateTime.now().difference(lastLive) >= _liveOfflineTimeout) {
+        _dashboard = _dashboardAsOffline(
+          dashboard,
+          DateTime.now().difference(lastLive),
+        );
+        _dashboardNotice = 'Pi live data is not arriving. Showing the hub as offline until fresh data arrives.';
+      } else {
+        _dashboardNotice = _feedPauseNotice(dashboard);
+      }
     });
   }
 
@@ -779,6 +886,8 @@ class _HomeScreenState extends State<HomeScreen> {
             ? _DashboardLoading(onRetry: () => _loadDashboard())
             : _error != null
             ? AppErrorState(message: _error!, onRetry: () => _loadDashboard())
+            : _isResolvingHomeAccess
+            ? _DashboardLoading(onRetry: () => _loadDashboard())
             : !isPaired
             ? _UnpairedHomeState(
                 name: _displayName(),

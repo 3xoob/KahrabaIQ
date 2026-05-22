@@ -787,7 +787,7 @@ class KahrabaIqApiService {
   }
 
   Stream<SensorData> watchLiveSensorData({required String homeId}) {
-    if (!NetworkConfig.useAwsIotLive || homeId != NetworkConfig.defaultHomeId) {
+    if (!NetworkConfig.useAwsIotLive) {
       return const Stream<SensorData>.empty();
     }
     return _watchAwsIotLivePayloads(homeId: homeId).map((data) {
@@ -800,7 +800,7 @@ class KahrabaIqApiService {
   }
 
   Stream<DashboardData> watchLiveDashboardData({required String homeId}) {
-    if (!NetworkConfig.useAwsIotLive || homeId != NetworkConfig.defaultHomeId) {
+    if (!NetworkConfig.useAwsIotLive) {
       return const Stream<DashboardData>.empty();
     }
     return _watchAwsIotLivePayloads(
@@ -1210,11 +1210,39 @@ class KahrabaIqApiService {
         : rawState;
     final name = _asString(_pick(data, ['name']), fallback: deviceId);
     final rawType = _asString(_pick(data, ['type']));
-    final online = _asBool(_pick(data, ['online']), fallback: false);
+    final rawPower = _asDouble(
+      _pick(data, ['powerW', 'power_w', 'power_W', 'currentPower']) ??
+          _pick(metering, ['power_W', 'power_w', 'power']),
+    );
+    final voltage = _asDouble(
+      _pick(data, ['voltageV', 'voltage_v', 'voltage_V', 'voltage']) ??
+          _pick(metering, ['voltage_V', 'voltage_v', 'voltage']),
+    );
+    final current = _asDouble(
+      _pick(data, ['currentA', 'current_a', 'current_A', 'current']) ??
+          _pick(metering, ['current_A', 'current_a', 'current']),
+    );
+    final energyToday = _asDouble(
+      _pick(data, [
+            'energyKwh',
+            'energy_kwh',
+            'energy_kWh',
+            'energyToday',
+            'today_kwh',
+          ]) ??
+          _pick(metering, ['energy_kWh', 'energy_kwh', 'energyToday']),
+    );
+    final inferredBreakerOnline =
+        deviceId.startsWith('breaker_') &&
+        (rawPower > 0 || voltage > 0 || current > 0);
+    final online = _asBool(
+      _pick(data, ['online']),
+      fallback: inferredBreakerOnline,
+    );
     final stale = _asBool(_pick(data, ['stale']));
     final localOnline = _asBool(
       _pick(data, ['localOnline', 'local_online']),
-      fallback: online,
+      fallback: inferredBreakerOnline || online,
     );
     final isOn =
         online &&
@@ -1229,12 +1257,7 @@ class KahrabaIqApiService {
       name: name,
       type: _parseApiDeviceType(deviceId, name, rawType),
       isOn: isOn,
-      currentPower: online
-          ? _asDouble(
-              _pick(data, ['powerW', 'power_w', 'power_W', 'currentPower']) ??
-                  _pick(metering, ['power_W', 'power_w', 'power']),
-            )
-          : 0,
+      currentPower: online ? rawPower : 0,
       branch: _asString(
         _pick(data, ['branch', 'zone']),
         fallback: _branchFromDeviceId(deviceId),
@@ -1252,24 +1275,9 @@ class KahrabaIqApiService {
         _pick(data, ['energySupported', 'energy_supported']),
         fallback: true,
       ),
-      voltage: _asDouble(
-        _pick(data, ['voltageV', 'voltage_v', 'voltage_V', 'voltage']) ??
-            _pick(metering, ['voltage_V', 'voltage_v', 'voltage']),
-      ),
-      current: _asDouble(
-        _pick(data, ['currentA', 'current_a', 'current_A', 'current']) ??
-            _pick(metering, ['current_A', 'current_a', 'current']),
-      ),
-      energyToday: _asDouble(
-        _pick(data, [
-              'energyKwh',
-              'energy_kwh',
-              'energy_kWh',
-              'energyToday',
-              'today_kwh',
-            ]) ??
-            _pick(metering, ['energy_kWh', 'energy_kwh', 'energyToday']),
-      ),
+      voltage: voltage,
+      current: current,
+      energyToday: energyToday,
       controlMethod: _asNullableString(
         _pick(data, ['controlMethod', 'control_method']),
       ),
@@ -1642,11 +1650,25 @@ class KahrabaIqApiService {
     final rawType = _asString(_pick(data, ['type']));
     final name = _asString(_pick(data, ['name']), fallback: deviceId);
     final lastCommand = _asMap(data['last_command']);
-    final online = _asBool(_pick(data, ['online']), fallback: false);
+    final rawPower = _asDouble(
+      _pick(data, ['power_w', 'currentPower', 'power_W', 'powerW']),
+    );
+    final voltage = _asDouble(_pick(data, ['voltage_v', 'voltage_V', 'voltageV']));
+    final current = _asDouble(_pick(data, ['current_a', 'current_A', 'currentA']));
+    final energyToday = _asDouble(
+      _pick(data, ['energy_kwh', 'energy_kWh', 'energyKwh', 'today_kwh']),
+    );
+    final inferredBreakerOnline =
+        deviceId.startsWith('breaker_') &&
+        (rawPower > 0 || voltage > 0 || current > 0);
+    final online = _asBool(
+      _pick(data, ['online']),
+      fallback: inferredBreakerOnline,
+    );
     final stale = _asBool(_pick(data, ['stale']));
     final localOnline = _asBool(
       _pick(data, ['local_online', 'localOnline']),
-      fallback: online,
+      fallback: inferredBreakerOnline || online,
     );
     final energySupported = _asBool(
       _pick(data, ['energy_supported', 'energySupported']),
@@ -1661,11 +1683,7 @@ class KahrabaIqApiService {
       name: name,
       type: _parseApiDeviceType(deviceId, name, rawType),
       isOn: visualIsOn,
-      currentPower: online
-          ? _asDouble(
-              _pick(data, ['power_w', 'currentPower', 'power_W', 'powerW']),
-            )
-          : 0.0,
+      currentPower: online ? rawPower : 0.0,
       branch: _asString(
         _pick(data, ['branch', 'zone']),
         fallback: _branchFromDeviceId(deviceId),
@@ -1680,11 +1698,9 @@ class KahrabaIqApiService {
       controllable: _asBool(_pick(data, ['controllable']), fallback: true),
       commandInProgress: commandInProgress,
       energySupported: energySupported,
-      voltage: _asDouble(_pick(data, ['voltage_v', 'voltage_V', 'voltageV'])),
-      current: _asDouble(_pick(data, ['current_a', 'current_A', 'currentA'])),
-      energyToday: _asDouble(
-        _pick(data, ['energy_kwh', 'energy_kWh', 'energyKwh', 'today_kwh']),
-      ),
+      voltage: voltage,
+      current: current,
+      energyToday: energyToday,
       controlMethod: _asNullableString(
         _pick(data, ['control_method', 'controlMethod']),
       ),
@@ -2365,14 +2381,6 @@ class KahrabaIqApiService {
     required String homeId,
     bool emergency = false,
   }) async {
-    if (homeId != NetworkConfig.defaultHomeId) {
-      throw ArgumentError.value(
-        homeId,
-        'homeId',
-        'Device control is only enabled for the real home',
-      );
-    }
-
     if (!_isCommandEnabledDeviceId(deviceId)) {
       throw ArgumentError.value(deviceId, 'deviceId', 'Unsupported device ID');
     }

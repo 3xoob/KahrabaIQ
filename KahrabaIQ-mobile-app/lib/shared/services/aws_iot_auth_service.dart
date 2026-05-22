@@ -403,10 +403,6 @@ class AuthService {
         'values with --dart-define.',
       );
     }
-    if (homeId != NetworkConfig.defaultHomeId) {
-      throw ArgumentError.value(homeId, 'homeId', 'Unsupported home ID');
-    }
-
     final credentials = await _loadAwsCredentials().timeout(
       const Duration(seconds: 10),
       onTimeout: () => throw TimeoutException(
@@ -427,7 +423,22 @@ class AuthService {
     return AwsIotConnectionConfig(
       signedUrl: _buildAwsIotWebSocketUrl(credentials),
       clientId: clientId,
-      topic: NetworkConfig.awsIotLiveTopic,
+      topic: _liveTopicForHome(homeId),
+    );
+  }
+
+  String _liveTopicForHome(String homeId) {
+    final configured = NetworkConfig.awsIotLiveTopic.trim();
+    if (homeId == NetworkConfig.defaultHomeId || configured.isEmpty) {
+      return configured.isEmpty ? 'homes/$homeId/live/state' : configured;
+    }
+    final defaultTopic = 'homes/${NetworkConfig.defaultHomeId}/live/state';
+    if (configured == defaultTopic) {
+      return 'homes/$homeId/live/state';
+    }
+    return configured.replaceFirst(
+      '/${NetworkConfig.defaultHomeId}/',
+      '/$homeId/',
     );
   }
 

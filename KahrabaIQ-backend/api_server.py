@@ -106,6 +106,11 @@ DEVICE_ALIASES = {
     "ac_breaker": "breaker_01",
     "socket_breaker": "breaker_02",
 }
+DOWNSTREAM_DEVICE_BREAKERS = {
+    "matter_socket_switch": "breaker_02",
+    "light_switch": "breaker_02",
+    "matter_ac_switch": "breaker_01",
+}
 CONTROLLABLE_DEVICES = {"breaker_01", "breaker_02", *DEVICE_ALIASES, *MATTER_DEVICE_IDS}
 VALID_COMMANDS = {"turn_on", "turn_off"}
 DEVICE_STALE_AFTER_MS = 45 * 1000
@@ -3813,6 +3818,23 @@ def format_device(device_id: str, raw_device: Any, settings: dict[str, Any] | No
         backend_energy.get("power_W"),
     )
     power_w = None if energy_supported is False or raw_power is None else as_number(raw_power)
+    has_live_metering = any(
+        as_number(value) is not None
+        for value in (
+            raw_power,
+            raw.get("voltage_v"),
+            raw.get("voltage_V"),
+            metering.get("voltage_V"),
+            metering.get("voltage"),
+            raw.get("current_a"),
+            raw.get("current_A"),
+            metering.get("current_A"),
+            metering.get("current"),
+        )
+    )
+    if is_home_assistant_device and is_breaker and has_live_metering:
+        online = True
+        is_stale = False
     if not online and energy_supported is not False:
         power_w = 0.0
 
@@ -4121,7 +4143,46 @@ def build_devices(
             formatted_device["automation"] = ensure_device_automation(home_id, device_id)
         formatted[device_id] = formatted_device
 
-    return formatted
+    return apply_downstream_breaker_status(formatted)
+
+
+def breaker_allows_downstream_power(devices: dict[str, dict[str, Any]], breaker_id: str) -> bool:
+    breaker = as_dict(devices.get(breaker_id))
+    return breaker.get("online") is True and str(breaker.get("state", "")).lower() == "on"
+
+
+def apply_downstream_breaker_status(
+    devices: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    for device_id, breaker_id in DOWNSTREAM_DEVICE_BREAKERS.items():
+        device = as_dict(devices.get(device_id))
+        if not device or breaker_allows_downstream_power(devices, breaker_id):
+            continue
+        status = as_dict(device.get("status"))
+        devices[device_id] = {
+            **device,
+            "state": "off",
+            "display_state": "off",
+            "is_on": False,
+            "online": False,
+            "local_online": False,
+            "stale": True,
+            "power_w": 0,
+            "currentPower": 0,
+            "current_power_w": 0,
+            "current_a": 0,
+            "command_in_progress": False,
+            "pending_command_id": None,
+            "pending_target_state": None,
+            "last_command_message": f"Upstream breaker {breaker_id} is off or offline.",
+            "status": {
+                **status,
+                "online": False,
+                "switch": False,
+                "relay_status": "off",
+            },
+        }
+    return devices
 
 
 def build_energy(

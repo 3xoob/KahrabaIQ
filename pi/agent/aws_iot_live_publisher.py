@@ -111,6 +111,12 @@ DEVICE_DEFAULTS = {
     },
 }
 
+DOWNSTREAM_DEVICE_BREAKERS = {
+    "matter_socket_switch": "breaker_02",
+    "light_switch": "breaker_02",
+    "matter_ac_switch": "breaker_01",
+}
+
 
 def log(message: str) -> None:
     print(f"[AWS IOT LIVE] {datetime.now(BAHRAIN_TZ).isoformat()} {message}", flush=True)
@@ -339,6 +345,10 @@ def normalize_device(device_id: str, raw_device: dict[str, Any]) -> dict[str, An
     energy_kwh = as_number(
         first_present(device.get("energy_kWh"), device.get("energy_kwh"), device.get("today_kwh"), metering.get("energy_kWh"), metering.get("energy_kwh"))
     )
+    has_live_metering = any(value > 0 for value in (power_w, voltage_v, current_a))
+    if device_id.startswith("breaker_") and has_live_metering:
+        online = True
+        local_online = True
 
     normalized_status = compact_status({
         **compact_status(status),
@@ -396,6 +406,51 @@ def collect_devices(home: dict[str, Any]) -> dict[str, Any]:
             "online": as_bool(first_present(as_dict(esp32.get("status")).get("online"), esp32.get("online")), fallback=False),
             "status": compact_status(as_dict(esp32.get("status"))),
             "sensors": compact_sensor_payload(as_dict(esp32.get("sensors"))),
+        }
+    return apply_downstream_breaker_status(devices)
+
+
+def breaker_allows_downstream_power(devices: dict[str, Any], breaker_id: str) -> bool:
+    breaker = as_dict(devices.get(breaker_id))
+    status = as_dict(breaker.get("status"))
+    return (
+        as_bool(first_present(status.get("online"), breaker.get("online")), fallback=False)
+        and as_bool(first_present(status.get("switch"), breaker.get("state")), fallback=False)
+    )
+
+
+def apply_downstream_breaker_status(devices: dict[str, Any]) -> dict[str, Any]:
+    for device_id, breaker_id in DOWNSTREAM_DEVICE_BREAKERS.items():
+        device = as_dict(devices.get(device_id))
+        if not device or breaker_allows_downstream_power(devices, breaker_id):
+            continue
+        status = {
+            **as_dict(device.get("status")),
+            "online": False,
+            "switch": False,
+            "relay_status": "off",
+            "message": f"Upstream breaker {breaker_id} is off or offline.",
+        }
+        metering = {
+            **as_dict(device.get("metering")),
+            "power_W": 0,
+            "current_A": 0,
+        }
+        devices[device_id] = {
+            **device,
+            "online": False,
+            "local_online": False,
+            "state": "off",
+            "display_state": "off",
+            "status": status,
+            "metering": metering,
+            "power_W": 0,
+            "current_A": 0,
+            "currentPower": 0,
+            "command_in_progress": False,
+            "pending_command_id": None,
+            "pending_target_state": None,
+            "last_command_message": status["message"],
         }
     return devices
 
