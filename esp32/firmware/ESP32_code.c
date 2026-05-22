@@ -30,6 +30,7 @@ const bool DIRECT_WIFI_MODE = true;
 const char* MANUAL_WIFI_SSID = "Nassernxs";
 const char* MANUAL_WIFI_PASSWORD = "nasser04";
 const char* MANUAL_PI_IP = "10.41.1.94";
+const int MANUAL_PI_PORT = 5000;
 const char* MANUAL_PI_SENSOR_URL = "";
   const char* MANUAL_HOME_ID = "home_001";
   const char* MANUAL_PI_ID = "pi_home_001";
@@ -139,6 +140,20 @@ const char* MANUAL_PI_SENSOR_URL = "";
     return baseUrl + "/api/sensors/room1";
   }
 
+  String manualPiSensorEndpoint() {
+    if (strlen(MANUAL_PI_SENSOR_URL)) {
+      return String(MANUAL_PI_SENSOR_URL);
+    }
+    if (strlen(MANUAL_PI_IP)) {
+      return sensorEndpointFromBaseUrl("http://" + String(MANUAL_PI_IP) + ":" + String(MANUAL_PI_PORT));
+    }
+    return "";
+  }
+
+  bool hasManualPiEndpoint() {
+    return manualPiSensorEndpoint().length() > 0;
+  }
+
   void loadConfig() {
     prefs.begin("kahrabaiq", true);
     wifiSsid = prefs.getString("ssid", "");
@@ -157,13 +172,7 @@ const char* MANUAL_PI_SENSOR_URL = "";
       piId = strlen(MANUAL_PI_ID) ? MANUAL_PI_ID : piId;
       deviceId = strlen(MANUAL_DEVICE_ID) ? MANUAL_DEVICE_ID : deviceId;
       esp32DeviceKey = strlen(MANUAL_DEVICE_KEY) ? MANUAL_DEVICE_KEY : esp32DeviceKey;
-    if (strlen(MANUAL_PI_SENSOR_URL)) {
-      piSensorUrl = MANUAL_PI_SENSOR_URL;
-    } else if (strlen(MANUAL_PI_IP)) {
-      piSensorUrl = sensorEndpointFromBaseUrl("http://" + String(MANUAL_PI_IP) + ":5000");
-    } else {
-      piSensorUrl = "";
-    }
+      piSensorUrl = manualPiSensorEndpoint();
   }
 }
 
@@ -347,6 +356,13 @@ const char* MANUAL_PI_SENSOR_URL = "";
       return piSensorUrl.length() > 0;
     }
 
+    piSensorUrl = manualPiSensorEndpoint();
+    if (piSensorUrl.length() > 0) {
+      Serial.print("Using configured Pi sensor URL: ");
+      Serial.println(piSensorUrl);
+      return true;
+    }
+
     Serial.println("Pi sensor URL is not configured. Trying mDNS discovery...");
     for (size_t i = 0; i < MANUAL_PI_MDNS_HOSTNAME_COUNT; i++) {
       const char* hostname = MANUAL_PI_MDNS_HOSTNAMES[i];
@@ -374,6 +390,10 @@ const char* MANUAL_PI_SENSOR_URL = "";
 
   void handleStatus() {
     setupServer.send(200, "application/json", statusJson());
+  }
+
+  void handlePing() {
+    setupServer.send(200, "text/plain", "ok");
   }
 
   void handleResetConfig() {
@@ -414,6 +434,7 @@ const char* MANUAL_PI_SENSOR_URL = "";
   }
 
   void startHttpServer() {
+    setupServer.on("/ping", HTTP_GET, handlePing);
     setupServer.on("/status", HTTP_GET, handleStatus);
     setupServer.on("/provision", HTTP_POST, handleProvision);
     setupServer.on("/reset", HTTP_POST, handleResetConfig);
@@ -601,11 +622,16 @@ const char* MANUAL_PI_SENSOR_URL = "";
 
     HTTPClient http;
 
+    Serial.print("POST target: ");
+    Serial.println(url);
+
     if (!http.begin(url)) {
       Serial.println("Failed to start HTTP connection");
       return false;
     }
 
+    http.setConnectTimeout(4000);
+    http.setTimeout(6000);
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-Device-Key", esp32DeviceKey);
 
@@ -626,6 +652,23 @@ const char* MANUAL_PI_SENSOR_URL = "";
       http.end();
       return false;
     }
+  }
+
+  bool sendPostRequestWithRetry(const String& url, const String& jsonPayload) {
+    const int attempts = 2;
+    for (int attempt = 1; attempt <= attempts; attempt++) {
+      Serial.print("Pi upload attempt ");
+      Serial.print(attempt);
+      Serial.print("/");
+      Serial.println(attempts);
+      if (sendPostRequest(url, jsonPayload)) {
+        return true;
+      }
+      if (attempt < attempts) {
+        delay(700);
+      }
+    }
+    return false;
   }
 
   // =====================================
@@ -863,10 +906,10 @@ const char* MANUAL_PI_SENSOR_URL = "";
     if (piSensorUrl.length() == 0) {
       return;
     }
-    bool piOk = sendPostRequest(piSensorUrl, liveJson);
+    bool piOk = sendPostRequestWithRetry(piSensorUrl, liveJson);
 
-    if (!piOk && DIRECT_WIFI_MODE && strlen(MANUAL_PI_SENSOR_URL) == 0) {
-      Serial.println("Upload failed. Clearing discovered Pi URL so it can be rediscovered next cycle.");
+    if (!piOk && DIRECT_WIFI_MODE && !hasManualPiEndpoint()) {
+      Serial.println("Upload failed. Clearing discovered Pi URL so mDNS can retry next cycle.");
       piSensorUrl = "";
     }
 
