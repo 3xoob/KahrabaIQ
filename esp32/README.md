@@ -12,6 +12,38 @@ After provisioning, it connects to home Wi-Fi, advertises `kahrabaiq-esp32.local
 
 If no Wi-Fi/Pi config exists, the firmware stays in setup mode and does not spam upload attempts. After provisioning, it reboots into normal mode and posts sensor data every 3 seconds.
 
+## Manual Wi-Fi Mode
+
+For lab/demo setups where Pi-led provisioning is unreliable, `esp32/firmware/ESP32_code.c` supports direct Wi-Fi configuration near the top of the file:
+
+```c
+const bool DIRECT_WIFI_MODE = true;
+const char* MANUAL_WIFI_SSID = "YOUR_WIFI_NAME";
+const char* MANUAL_WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char* MANUAL_PI_IP = "";
+const char* MANUAL_PI_SENSOR_URL = "";
+```
+
+When `MANUAL_PI_SENSOR_URL` is empty, the ESP32 joins Wi-Fi and tries to find the Pi by mDNS as `kahrabaiq-pi.local` or `raspberrypi.local`, then posts to port `5000` at `/api/sensors/room1`. If discovery fails, set `MANUAL_PI_IP` to the Pi Wi-Fi address:
+
+```c
+const char* MANUAL_PI_IP = "192.168.1.55";
+```
+
+You can also set the full endpoint directly:
+
+```c
+const char* MANUAL_PI_SENSOR_URL = "http://192.168.1.55:5000/api/sensors/room1";
+```
+
+On the Pi, confirm the receiver is reachable from another device on the same Wi-Fi:
+
+```bash
+curl http://<PI_IP_ADDRESS>:5000/api/health
+```
+
+The `MANUAL_DEVICE_KEY` value in firmware must match `ESP32_DEVICE_KEY` in `/etc/kahrabaiq/pi.env`. Do not commit real Wi-Fi passwords or device keys to a shared repository.
+
 ## Recommended Pi-Led Provisioning Flow
 
 In the deployed system, the Raspberry Pi provisions the ESP32 before the locked dashboard starts. The Pi uses two Wi-Fi interfaces:

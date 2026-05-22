@@ -38,6 +38,18 @@ from timestamp_utils import TIMEZONE, ms_to_iso, now_timestamp
 app = Flask(__name__)
 
 
+@app.get("/api/health")
+def health_check():
+    return jsonify(
+        {
+            "success": True,
+            "service": "kahrabaiq-esp32-receiver",
+            "home_id": HOME_ID,
+            "esp32_source_id": ESP32_SOURCE_ID,
+        }
+    )
+
+
 def hash_secret(secret: str) -> str:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()
 
