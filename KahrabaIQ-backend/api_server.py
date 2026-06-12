@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import calendar
 import html
 import io
 import json
@@ -5426,6 +5427,16 @@ def get_daily_summaries(
     return {"success": True, "home_id": home_id, "count": len(summaries), "summaries": summaries}
 
 
+@app.get("/api/homes/{home_id}/energy/history", dependencies=[Depends(require_home_permission("can_view"))])
+def get_energy_history(home_id: str) -> dict[str, Any]:
+    return build_energy_history_response(home_id)
+
+
+@app.get("/api/homes/{home_id}/energy/budget", dependencies=[Depends(require_home_permission("can_view"))])
+def get_energy_budget(home_id: str) -> dict[str, Any]:
+    return build_energy_budget_response(home_id)
+
+
 @app.get("/api/homes/{home_id}/insights", dependencies=[Depends(require_home_permission("can_view"))])
 def get_home_insights(home_id: str) -> dict[str, Any]:
     return {"success": True, **build_home_insights(home_id)}
@@ -7824,6 +7835,261 @@ def summary_hour(summary: dict[str, Any]) -> int | None:
     return datetime.fromtimestamp(start_ms / 1000, tz=BAHRAIN_TZ).hour
 
 
+def summary_timestamp_ms(summary: dict[str, Any]) -> int:
+    return int(
+        as_number(
+            first_present(
+                summary.get("startAtMs"),
+                summary.get("start_at_ms"),
+                summary.get("hour_start"),
+                summary.get("day_start"),
+                summary.get("month_start"),
+                summary.get("timestamp_ms"),
+                summary.get("updated_at_ms"),
+            ),
+            0,
+        )
+        or 0
+    )
+
+
+def summary_cost_value(summary: dict[str, Any], tariff: float) -> float:
+    energy = as_dict(summary.get("energy"))
+    raw = first_present(
+        energy.get("total_cost_BHD"),
+        energy.get("total_cost_bhd"),
+        energy.get("cost_bhd"),
+        summary.get("total_cost_BHD"),
+        summary.get("total_cost_bhd"),
+        summary.get("cost_bhd"),
+        summary.get("totalCostBhd"),
+    )
+    if raw is not None:
+        return as_number(raw)
+    return round(summary_energy_value(summary) * tariff, 6)
+
+
+def summary_label(summary: dict[str, Any], fallback_ms: int, period: str) -> str:
+    for key in ("date", "day", "period", "month", "label"):
+        value = summary.get(key)
+        if value and str(value).lower() not in {"hourly", "daily", "monthly"}:
+            return str(value)
+    timestamp_ms = summary_timestamp_ms(summary) or fallback_ms
+    if timestamp_ms <= 0:
+        return ""
+    dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=BAHRAIN_TZ)
+    if period == "monthly":
+        return dt.strftime("%Y-%m")
+    if period == "hourly":
+        return dt.strftime("%H:00")
+    return dt.strftime("%Y-%m-%d")
+
+
+def energy_history_point(summary: dict[str, Any], period: str, tariff: float) -> dict[str, Any]:
+    timestamp_ms = summary_timestamp_ms(summary)
+    return {
+        "timestamp_ms": timestamp_ms,
+        "timestamp_iso": iso_from_ms(timestamp_ms) if timestamp_ms > 0 else None,
+        "label": summary_label(summary, timestamp_ms, period),
+        "kwh": round(summary_energy_value(summary), 6),
+        "cost_bhd": round(summary_cost_value(summary, tariff), 6),
+        "power_w": round(summary_power_value(summary), 3),
+    }
+
+
+def breaker_contribution_from_summaries(
+    summaries: list[dict[str, Any]],
+    tariff: float,
+) -> list[dict[str, Any]]:
+    totals: dict[str, dict[str, Any]] = {}
+    for summary in summaries:
+        for breaker_id, raw in as_dict(summary.get("breakerSummaries")).items():
+            item = as_dict(raw)
+            energy_kwh = as_number(
+                first_present(
+                    item.get("energyDeltaKwh"),
+                    item.get("energy_delta_kwh"),
+                    item.get("energyToday"),
+                    item.get("energy_kwh"),
+                )
+            )
+            if energy_kwh <= 0:
+                continue
+            friendly_name = str(first_present(item.get("name"), item.get("label"), default="")).strip()
+            if str(breaker_id) == "breaker_01":
+                friendly_name = "AC breaker"
+            elif str(breaker_id) == "breaker_02":
+                friendly_name = "Socket breaker"
+            elif not friendly_name or friendly_name.lower().startswith("breaker_"):
+                friendly_name = str(breaker_id)
+            friendly_branch = str(first_present(item.get("branch"), item.get("circuit"), default="")).strip()
+            if str(breaker_id) == "breaker_01":
+                friendly_branch = "AC"
+            elif str(breaker_id) == "breaker_02":
+                friendly_branch = "Socket"
+            elif not friendly_branch:
+                friendly_branch = "Breaker"
+            record = totals.setdefault(
+                str(breaker_id),
+                {
+                    "breaker_id": str(breaker_id),
+                    "name": friendly_name,
+                    "branch": friendly_branch,
+                    "energy_kwh": 0.0,
+                },
+            )
+            record["energy_kwh"] = round(as_number(record["energy_kwh"]) + energy_kwh, 6)
+    total_energy = sum(as_number(item["energy_kwh"]) for item in totals.values())
+    if total_energy <= 0:
+        return []
+    rows = []
+    for item in totals.values():
+        energy_kwh = as_number(item["energy_kwh"])
+        rows.append(
+            {
+                **item,
+                "cost_bhd": round(energy_kwh * tariff, 6),
+                "percentage": round((energy_kwh / total_energy) * 100, 2),
+            }
+        )
+    return sorted(rows, key=lambda item: as_number(item["energy_kwh"]), reverse=True)
+
+
+def monthly_points_from_daily(
+    daily: list[dict[str, Any]],
+    monthly: list[dict[str, Any]],
+    tariff: float,
+) -> list[dict[str, Any]]:
+    if monthly:
+        return [energy_history_point(summary, "monthly", tariff) for summary in monthly]
+    buckets: dict[str, dict[str, Any]] = {}
+    for summary in daily:
+        timestamp_ms = summary_timestamp_ms(summary)
+        if timestamp_ms <= 0:
+            continue
+        month = datetime.fromtimestamp(timestamp_ms / 1000, tz=BAHRAIN_TZ).strftime("%Y-%m")
+        bucket = buckets.setdefault(month, {"label": month, "timestamp_ms": timestamp_ms, "kwh": 0.0, "cost_bhd": 0.0})
+        bucket["timestamp_ms"] = min(int(bucket["timestamp_ms"]), timestamp_ms)
+        bucket["kwh"] = round(as_number(bucket["kwh"]) + summary_energy_value(summary), 6)
+        bucket["cost_bhd"] = round(as_number(bucket["cost_bhd"]) + summary_cost_value(summary, tariff), 6)
+    return [
+        {
+            "timestamp_ms": item["timestamp_ms"],
+            "timestamp_iso": iso_from_ms(item["timestamp_ms"]),
+            "label": item["label"],
+            "kwh": item["kwh"],
+            "cost_bhd": item["cost_bhd"],
+            "power_w": 0,
+        }
+        for item in sorted(buckets.values(), key=lambda value: value["timestamp_ms"])
+    ]
+
+
+def sort_history_points(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(points, key=lambda item: as_number(item.get("timestamp_ms")))
+
+
+def build_energy_history_response(home_id: str) -> dict[str, Any]:
+    settings = ensure_settings(home_id)
+    tariff = as_number(settings.get("cost_per_kwh"), 0.029)
+    hourly = query_summaries_between(home_id, "hourly", limit=168)
+    daily = query_summaries_between(home_id, "daily", limit=90)
+    monthly = query_summaries_between(home_id, "monthly", limit=12)
+    hourly_points = sort_history_points(
+        [energy_history_point(summary, "hourly", tariff) for summary in hourly]
+    )
+    daily_points = sort_history_points(
+        [energy_history_point(summary, "daily", tariff) for summary in daily]
+    )
+    monthly_points = sort_history_points(monthly_points_from_daily(daily, monthly, tariff))
+    recent_for_breakers = hourly if hourly else daily
+    peak_hours = sorted(
+        [point for point in hourly_points if as_number(point.get("kwh")) > 0],
+        key=lambda item: as_number(item.get("kwh")),
+        reverse=True,
+    )[:5]
+    return {
+        "success": True,
+        "home_id": home_id,
+        "power_history": hourly_points[-48:],
+        "hourly_usage": hourly_points,
+        "daily_energy": daily_points,
+        "monthly_energy": monthly_points,
+        "cost_history": daily_points if daily_points else monthly_points,
+        "breaker_contribution": breaker_contribution_from_summaries(recent_for_breakers, tariff),
+        "peak_usage_hours": peak_hours,
+        "settings": settings_summary(settings),
+    }
+
+
+def build_energy_budget_response(home_id: str) -> dict[str, Any]:
+    settings = ensure_settings(home_id)
+    tariff = as_number(settings.get("cost_per_kwh"), 0.029)
+    budget = as_number(settings.get("monthly_cost_limit_bhd"))
+    now_dt = datetime.now(BAHRAIN_TZ)
+    month_start = datetime(now_dt.year, now_dt.month, 1, tzinfo=BAHRAIN_TZ)
+    start_ms = int(month_start.timestamp() * 1000)
+    end_ms = now_ms()
+    daily = query_summaries_between(home_id, "daily", start_at_ms=start_ms, end_at_ms=end_ms, limit=45)
+    hourly = query_summaries_between(home_id, "hourly", start_at_ms=start_ms, end_at_ms=end_ms, limit=744)
+    month_summary = build_monthly_energy_summary(home_id, settings)
+    current_cost = as_number(month_summary.get("month_cost_bhd"))
+    current_kwh = as_number(month_summary.get("month_kwh"))
+    if current_cost <= 0:
+        current_cost = round(current_kwh * tariff, 6)
+    days_in_month = calendar.monthrange(now_dt.year, now_dt.month)[1]
+    days_elapsed = max(now_dt.day, 1)
+    days_remaining = max(days_in_month - now_dt.day, 0)
+    percentage = round((current_cost / budget) * 100, 2) if budget > 0 else 0
+    remaining = round(budget - current_cost, 6) if budget > 0 else 0
+    average_daily = round(current_cost / days_elapsed, 6)
+    recommended_daily = round(max(remaining, 0) / max(days_remaining, 1), 6) if budget > 0 else 0
+    predicted_monthly = round(average_daily * days_in_month, 6)
+    predicted_difference = round(predicted_monthly - budget, 6) if budget > 0 else 0
+    status = "no_budget"
+    if budget > 0:
+        if current_cost > budget:
+            status = "over_budget"
+        elif percentage >= as_number(settings.get("high_usage_warning_percent"), 80):
+            status = "near_limit"
+        else:
+            status = "on_track"
+    source_points = daily if daily else hourly
+    progress = sort_history_points(
+        [energy_history_point(summary, "daily" if daily else "hourly", tariff) for summary in source_points]
+    )
+    daily_budget_progress = [
+        {
+            **point,
+            "actual_cost_bhd": point["cost_bhd"],
+            "recommended_cost_bhd": recommended_daily if budget > 0 else 0,
+            "over_recommended": budget > 0 and point["cost_bhd"] > recommended_daily,
+        }
+        for point in progress
+    ]
+    return {
+        "success": True,
+        "home_id": home_id,
+        "monthly_budget_bhd": budget,
+        "current_month_cost_bhd": round(current_cost, 6),
+        "current_month_energy_kwh": round(current_kwh, 6),
+        "remaining_budget_bhd": remaining,
+        "percentage_used": percentage,
+        "days_remaining": days_remaining,
+        "average_daily_cost_bhd": average_daily,
+        "recommended_daily_limit_bhd": recommended_daily,
+        "predicted_monthly_cost_bhd": predicted_monthly,
+        "predicted_difference_bhd": predicted_difference,
+        "status": status,
+        "daily_budget_progress": daily_budget_progress,
+        "breaker_contribution": breaker_contribution_from_summaries(hourly if hourly else daily, tariff),
+        "month_data_available": bool(month_summary.get("month_data_available")),
+        "month_source": month_summary.get("month_source"),
+        "reason_if_unavailable": month_summary.get("reason_if_unavailable"),
+        "settings": settings_summary(settings),
+    }
+
+
 def summary_is_weekend(summary: dict[str, Any]) -> bool:
     start_ms = summary_start_ms(summary)
     if start_ms <= 0:
@@ -7833,7 +8099,7 @@ def summary_is_weekend(summary: dict[str, Any]) -> bool:
 
 
 def summary_ac_usage_minutes(summary: dict[str, Any]) -> float:
-    ac = as_dict(as_dict(summary.get("breakerSummaries")).get("breaker_02"))
+    ac = as_dict(as_dict(summary.get("breakerSummaries")).get("breaker_01"))
     samples = as_number(ac.get("switchOnSamples"), 0)
     sample_count = as_number(ac.get("sampleCount"), 0)
     if sample_count <= 0:
@@ -7853,8 +8119,8 @@ def latest_device_context(home_id: str) -> dict[str, Any]:
 
     return {
         "latest_control_mode": str(control.get("mode", "assist")),
-        "latest_ac_state": state_for("breaker_02"),
-        "latest_socket_state": state_for("breaker_01"),
+        "latest_ac_state": state_for("breaker_01"),
+        "latest_socket_state": state_for("breaker_02"),
         "latest_breaker_state": state_for("breaker_01"),
         "latest_state_age_ms": max(0, now_ms() - int(as_number(first_present(latest_state.get("updated_at_ms"), latest_state.get("timestamp_ms")), 0))) if latest_state else None,
     }
@@ -8135,7 +8401,7 @@ def run_lightweight_anomaly_checks(
     if recent_power_mean > 0 and total_power > recent_power_mean + max(50, 2 * recent_power_std):
         notifications.append(ai_notification(home_id, "medium", "anomaly", "Power above recent normal range", "Current power is higher than the recent rolling average.", confidence=0.85, explanation=f"Current {total_power:.1f} W vs recent average {recent_power_mean:.1f} W.", notification_id="rolling_power_spike"))
     if ac_active and outside_routine_score >= 0.8 and as_number(payload.get("hour_of_day")) <= 5:
-        notifications.append(ai_notification(home_id, "medium", "routine", "AC running outside routine", "The AC appears active during an unusual time compared with recent routine.", device_id="breaker_02", recommendation_type="review_ac_schedule", confidence=0.75, notification_id="ac_outside_routine"))
+        notifications.append(ai_notification(home_id, "medium", "routine", "AC running outside routine", "The AC appears active during an unusual time compared with recent routine.", device_id="breaker_01", recommendation_type="review_ac_schedule", confidence=0.75, notification_id="ac_outside_routine"))
     if settings.get("ai_recommendations_enabled") is not False and as_number(payload.get("device_left_on_without_motion_minutes")) >= as_number(settings.get("occupancy_empty_minutes"), 10):
         notifications.append(ai_notification(home_id, "low", "recommendation", "Device may be left on", "A device has been active without recent motion. Consider turning unused devices off.", recommendation_type="turn_off_unused_devices", confidence=0.8, notification_id="device_left_on_without_motion"))
     return notifications
@@ -8394,8 +8660,8 @@ def build_ai_payload_from_scenario(
     occupancy = request.occupancy
     recent_history = request.recent_history
     routine_context = request.routine_context
-    socket = scenario_device(devices, "breaker_01")
-    ac = scenario_device(devices, "breaker_02")
+    ac = scenario_device(devices, "breaker_01")
+    socket = scenario_device(devices, "breaker_02")
 
     total_power = as_number(first_present(energy.get("power"), energy.get("current_power_w"), energy.get("total_power_W")))
     socket_power = as_number(first_present(socket.get("power"), socket.get("currentPower"), socket.get("current_power_w")))
@@ -8494,7 +8760,7 @@ SCENARIO_AI_MESSAGES: dict[str, dict[str, str]] = {
         "status_tone": "danger",
         "action_title": "Turn off AC",
         "anomaly": "ac_left_on_without_occupancy",
-        "device_id": "breaker_02",
+        "device_id": "breaker_01",
     },
     "socket_left_on": {
         "severity": "medium",
@@ -8507,7 +8773,7 @@ SCENARIO_AI_MESSAGES: dict[str, dict[str, str]] = {
         "status_tone": "warning",
         "action_title": "Turn off socket",
         "anomaly": "socket_left_on_without_occupancy",
-        "device_id": "breaker_01",
+        "device_id": "breaker_02",
     },
     "unusual_ac_routine": {
         "severity": "medium",
@@ -8520,7 +8786,7 @@ SCENARIO_AI_MESSAGES: dict[str, dict[str, str]] = {
         "status_tone": "warning",
         "action_title": "Confirm AC use",
         "anomaly": "ac_outside_weekday_routine",
-        "device_id": "breaker_02",
+        "device_id": "breaker_01",
     },
     "high_energy_consumption": {
         "severity": "medium",

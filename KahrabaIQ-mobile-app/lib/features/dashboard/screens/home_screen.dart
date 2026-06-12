@@ -21,6 +21,8 @@ import '../../../shared/services/notification_service.dart';
 import '../../ai_chat/screens/ai_chatbot_screen.dart';
 import '../../demo/demo_scenarios.dart';
 import '../../demo/widgets/demo_scenario_selector.dart';
+import '../../energy/screens/energy_budget_screen.dart';
+import '../../energy/screens/energy_history_screen.dart';
 import '../../pairing/screens/qr_scanner_screen.dart';
 import '../../sensors/screens/sensors_status_screen.dart';
 import 'breakers_screen.dart';
@@ -744,7 +746,8 @@ class _HomeScreenState extends State<HomeScreen> {
           dashboard,
           DateTime.now().difference(lastLive),
         );
-        _dashboardNotice = 'Pi live data is not arriving. Showing the hub as offline until fresh data arrives.';
+        _dashboardNotice =
+            'Pi live data is not arriving. Showing the hub as offline until fresh data arrives.';
       } else {
         _dashboardNotice = _feedPauseNotice(dashboard);
       }
@@ -948,7 +951,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     QuickStatsRow(
                       reading: dashboard.reading,
                       devices: dashboard.devices,
+                      settingsSummary: dashboard.settingsSummary,
                       onBreakersTap: () => _openBreakers(dashboard.devices),
+                      onBudgetTap: _openBudget,
                     ),
                     const SizedBox(height: 16),
                     if (dashboard.alerts
@@ -982,6 +987,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     _AiAnalysisSection(
                       dashboard: dashboard,
                       onOpenChat: _openChat,
+                      onOpenHistory: _openEnergyHistory,
                     ),
                     const SizedBox(height: 22),
                     DevicesSection(
@@ -1153,6 +1159,29 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     ),
   );
+
+  void _openEnergyHistory() {
+    final dashboard = _dashboard;
+    if (dashboard == null) {
+      return;
+    }
+    Navigator.of(context).push(
+      fadeSlideRoute(
+        EnergyHistoryScreen(
+          homeId: _homeId ?? NetworkConfig.defaultHomeId,
+          dashboard: dashboard,
+        ),
+      ),
+    );
+  }
+
+  void _openBudget() {
+    Navigator.of(context).push(
+      fadeSlideRoute(
+        EnergyBudgetScreen(homeId: _homeId ?? NetworkConfig.defaultHomeId),
+      ),
+    );
+  }
 
   String? _hubOfflineNotice(DashboardData dashboard) {
     if (dashboard.scenarioId != null) {
@@ -1557,10 +1586,15 @@ class _UnpairedHomeState extends StatelessWidget {
 }
 
 class _AiAnalysisSection extends StatelessWidget {
-  const _AiAnalysisSection({required this.dashboard, required this.onOpenChat});
+  const _AiAnalysisSection({
+    required this.dashboard,
+    required this.onOpenChat,
+    required this.onOpenHistory,
+  });
 
   final DashboardData dashboard;
   final VoidCallback onOpenChat;
+  final VoidCallback onOpenHistory;
 
   Color get _toneColor {
     final tone = dashboard.aiDashboard?.statusTone.toLowerCase() ?? '';
@@ -1721,169 +1755,186 @@ class _AiAnalysisSection extends StatelessWidget {
         ? dashboard.actionSuggestions.first.reason
         : dashboard.aiRecommendation?.message ?? _explanation;
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: ColorTokens.surfaceElevated,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onOpenHistory,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _toneColor.withValues(alpha: 0.35)),
-        boxShadow: const [BoxShadow(color: ColorTokens.shadow, blurRadius: 18)],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: ColorTokens.surfaceElevated,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: _toneColor.withValues(alpha: 0.35)),
+            boxShadow: const [
+              BoxShadow(color: ColorTokens.shadow, blurRadius: 18),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                  color: _toneColor.withValues(alpha: 0.16),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(Icons.psychology_alt, color: _toneColor, size: 22),
+              Row(
+                children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: _toneColor.withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                      Icons.psychology_alt,
+                      color: _toneColor,
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('AI Energy Analysis', style: AppTextStyles.h3),
+                        const SizedBox(height: 2),
+                        Text(
+                          _statusLabel,
+                          style: AppTextStyles.caption.copyWith(
+                            color: _toneColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: onOpenChat,
+                    icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                    label: const Text('Ask AI'),
+                  ),
+                ],
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+              if (dashboard.scenarioId != null) ...[
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
                   children: [
-                    Text('AI Energy Analysis', style: AppTextStyles.h3),
-                    const SizedBox(height: 2),
-                    Text(
-                      _statusLabel,
-                      style: AppTextStyles.caption.copyWith(color: _toneColor),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: ColorTokens.warning.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: ColorTokens.warning.withValues(alpha: 0.45),
+                        ),
+                      ),
+                      child: Text(
+                        'Simulation Mode: ${dashboard.scenarioName ?? 'Demo Scenario'}',
+                        style: AppTextStyles.caption.copyWith(
+                          color: ColorTokens.warning,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: ColorTokens.primary.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: ColorTokens.primary.withValues(alpha: 0.35),
+                        ),
+                      ),
+                      child: Text(
+                        _scenarioSourceLabel,
+                        style: AppTextStyles.caption.copyWith(
+                          color: ColorTokens.primary,
+                        ),
+                      ),
                     ),
                   ],
                 ),
-              ),
-              TextButton.icon(
-                onPressed: onOpenChat,
-                icon: const Icon(Icons.chat_bubble_outline, size: 18),
-                label: const Text('Ask AI'),
-              ),
-            ],
-          ),
-          if (dashboard.scenarioId != null) ...[
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: ColorTokens.warning.withValues(alpha: 0.14),
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(
-                      color: ColorTokens.warning.withValues(alpha: 0.45),
-                    ),
-                  ),
-                  child: Text(
-                    'Simulation Mode: ${dashboard.scenarioName ?? 'Demo Scenario'}',
-                    style: AppTextStyles.caption.copyWith(
-                      color: ColorTokens.warning,
-                    ),
-                  ),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: ColorTokens.primary.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(
-                      color: ColorTokens.primary.withValues(alpha: 0.35),
-                    ),
-                  ),
-                  child: Text(
-                    _scenarioSourceLabel,
-                    style: AppTextStyles.caption.copyWith(
-                      color: ColorTokens.primary,
-                    ),
-                  ),
-                ),
               ],
-            ),
-          ],
-          const SizedBox(height: 14),
-          Text(_summary, style: AppTextStyles.bodyMedium),
-          const SizedBox(height: 10),
-          Text(_explanation, style: AppTextStyles.caption),
-          const SizedBox(height: 14),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              _AiMetricChip(
-                icon: Icons.bolt,
-                label: _energyForecastLabel(ai),
+              const SizedBox(height: 14),
+              Text(_summary, style: AppTextStyles.bodyMedium),
+              const SizedBox(height: 10),
+              Text(_explanation, style: AppTextStyles.caption),
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _AiMetricChip(
+                    icon: Icons.bolt,
+                    label: _energyForecastLabel(ai),
+                  ),
+                  _AiMetricChip(
+                    icon: Icons.savings_outlined,
+                    label: _costForecastLabel(ai),
+                  ),
+                  _AiMetricChip(
+                    icon: Icons.tips_and_updates_outlined,
+                    label: _actionText,
+                  ),
+                ],
               ),
-              _AiMetricChip(
-                icon: Icons.savings_outlined,
-                label: _costForecastLabel(ai),
-              ),
-              _AiMetricChip(
-                icon: Icons.tips_and_updates_outlined,
-                label: _actionText,
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          if (_notificationText.isNotEmpty) ...[
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: _toneColor.withValues(alpha: 0.10),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: _toneColor.withValues(alpha: 0.28)),
-              ),
-              child: Text(
-                _notificationText,
-                style: AppTextStyles.caption.copyWith(
-                  color: ColorTokens.textPrimary,
-                ),
-              ),
-            ),
-            const SizedBox(height: 14),
-          ],
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: ColorTokens.surface,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: ColorTokens.border),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(
-                  Icons.lightbulb_outline,
-                  color: ColorTokens.warning,
-                  size: 20,
-                ),
-                const SizedBox(width: 10),
-                Expanded(
+              const SizedBox(height: 14),
+              if (_notificationText.isNotEmpty) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: _toneColor.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: _toneColor.withValues(alpha: 0.28),
+                    ),
+                  ),
                   child: Text(
-                    suggestion.trim().isEmpty
-                        ? 'No suggestion yet.'
-                        : suggestion,
+                    _notificationText,
                     style: AppTextStyles.caption.copyWith(
                       color: ColorTokens.textPrimary,
                     ),
                   ),
                 ),
+                const SizedBox(height: 14),
               ],
-            ),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: ColorTokens.surface,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: ColorTokens.border),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(
+                      Icons.lightbulb_outline,
+                      color: ColorTokens.warning,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        suggestion.trim().isEmpty
+                            ? 'No suggestion yet.'
+                            : suggestion,
+                        style: AppTextStyles.caption.copyWith(
+                          color: ColorTokens.textPrimary,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

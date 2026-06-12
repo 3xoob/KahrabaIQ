@@ -225,6 +225,112 @@ class HomeSettings {
   }
 }
 
+class EnergyHistoryPoint {
+  const EnergyHistoryPoint({
+    required this.timestamp,
+    required this.label,
+    required this.kwh,
+    required this.costBhd,
+    required this.powerW,
+  });
+
+  final DateTime timestamp;
+  final String label;
+  final double kwh;
+  final double costBhd;
+  final double powerW;
+}
+
+class BreakerContribution {
+  const BreakerContribution({
+    required this.breakerId,
+    required this.name,
+    required this.branch,
+    required this.energyKwh,
+    required this.costBhd,
+    required this.percentage,
+  });
+
+  final String breakerId;
+  final String name;
+  final String branch;
+  final double energyKwh;
+  final double costBhd;
+  final double percentage;
+}
+
+class EnergyHistoryData {
+  const EnergyHistoryData({
+    required this.powerHistory,
+    required this.hourlyUsage,
+    required this.dailyEnergy,
+    required this.monthlyEnergy,
+    required this.costHistory,
+    required this.breakerContribution,
+    required this.peakUsageHours,
+  });
+
+  final List<EnergyHistoryPoint> powerHistory;
+  final List<EnergyHistoryPoint> hourlyUsage;
+  final List<EnergyHistoryPoint> dailyEnergy;
+  final List<EnergyHistoryPoint> monthlyEnergy;
+  final List<EnergyHistoryPoint> costHistory;
+  final List<BreakerContribution> breakerContribution;
+  final List<EnergyHistoryPoint> peakUsageHours;
+}
+
+class DailyBudgetProgress {
+  const DailyBudgetProgress({
+    required this.timestamp,
+    required this.label,
+    required this.actualCostBhd,
+    required this.recommendedCostBhd,
+    required this.overRecommended,
+  });
+
+  final DateTime timestamp;
+  final String label;
+  final double actualCostBhd;
+  final double recommendedCostBhd;
+  final bool overRecommended;
+}
+
+class EnergyBudgetData {
+  const EnergyBudgetData({
+    required this.monthlyBudgetBhd,
+    required this.currentMonthCostBhd,
+    required this.currentMonthEnergyKwh,
+    required this.remainingBudgetBhd,
+    required this.percentageUsed,
+    required this.daysRemaining,
+    required this.averageDailyCostBhd,
+    required this.recommendedDailyLimitBhd,
+    required this.predictedMonthlyCostBhd,
+    required this.predictedDifferenceBhd,
+    required this.status,
+    required this.dailyProgress,
+    required this.breakerContribution,
+    required this.monthDataAvailable,
+    required this.reasonIfUnavailable,
+  });
+
+  final double monthlyBudgetBhd;
+  final double currentMonthCostBhd;
+  final double currentMonthEnergyKwh;
+  final double remainingBudgetBhd;
+  final double percentageUsed;
+  final int daysRemaining;
+  final double averageDailyCostBhd;
+  final double recommendedDailyLimitBhd;
+  final double predictedMonthlyCostBhd;
+  final double predictedDifferenceBhd;
+  final String status;
+  final List<DailyBudgetProgress> dailyProgress;
+  final List<BreakerContribution> breakerContribution;
+  final bool monthDataAvailable;
+  final String reasonIfUnavailable;
+}
+
 class ScheduleInfo {
   const ScheduleInfo({
     required this.id,
@@ -1653,8 +1759,12 @@ class KahrabaIqApiService {
     final rawPower = _asDouble(
       _pick(data, ['power_w', 'currentPower', 'power_W', 'powerW']),
     );
-    final voltage = _asDouble(_pick(data, ['voltage_v', 'voltage_V', 'voltageV']));
-    final current = _asDouble(_pick(data, ['current_a', 'current_A', 'currentA']));
+    final voltage = _asDouble(
+      _pick(data, ['voltage_v', 'voltage_V', 'voltageV']),
+    );
+    final current = _asDouble(
+      _pick(data, ['current_a', 'current_A', 'currentA']),
+    );
     final energyToday = _asDouble(
       _pick(data, ['energy_kwh', 'energy_kWh', 'energyKwh', 'today_kwh']),
     );
@@ -1945,6 +2055,128 @@ class KahrabaIqApiService {
 
     final response = await _dio.put('/api/home/$homeId/settings', data: values);
     return HomeSettings(_asMap(_asMap(response.data)['settings']));
+  }
+
+  Future<EnergyHistoryData> fetchEnergyHistory({required String homeId}) async {
+    if (usesLocalPiApi) {
+      return const EnergyHistoryData(
+        powerHistory: [],
+        hourlyUsage: [],
+        dailyEnergy: [],
+        monthlyEnergy: [],
+        costHistory: [],
+        breakerContribution: [],
+        peakUsageHours: [],
+      );
+    }
+    final response = await _dio.get('/api/homes/$homeId/energy/history');
+    final data = _asMap(response.data);
+    return EnergyHistoryData(
+      powerHistory: _asList(
+        data['power_history'],
+      ).map(_parseEnergyHistoryPoint).toList(),
+      hourlyUsage: _asList(
+        data['hourly_usage'],
+      ).map(_parseEnergyHistoryPoint).toList(),
+      dailyEnergy: _asList(
+        data['daily_energy'],
+      ).map(_parseEnergyHistoryPoint).toList(),
+      monthlyEnergy: _asList(
+        data['monthly_energy'],
+      ).map(_parseEnergyHistoryPoint).toList(),
+      costHistory: _asList(
+        data['cost_history'],
+      ).map(_parseEnergyHistoryPoint).toList(),
+      breakerContribution: _asList(
+        data['breaker_contribution'],
+      ).map(_parseBreakerContribution).toList(),
+      peakUsageHours: _asList(
+        data['peak_usage_hours'],
+      ).map(_parseEnergyHistoryPoint).toList(),
+    );
+  }
+
+  Future<EnergyBudgetData> fetchEnergyBudget({required String homeId}) async {
+    if (usesLocalPiApi) {
+      return const EnergyBudgetData(
+        monthlyBudgetBhd: 0,
+        currentMonthCostBhd: 0,
+        currentMonthEnergyKwh: 0,
+        remainingBudgetBhd: 0,
+        percentageUsed: 0,
+        daysRemaining: 0,
+        averageDailyCostBhd: 0,
+        recommendedDailyLimitBhd: 0,
+        predictedMonthlyCostBhd: 0,
+        predictedDifferenceBhd: 0,
+        status: 'no_budget',
+        dailyProgress: [],
+        breakerContribution: [],
+        monthDataAvailable: false,
+        reasonIfUnavailable: '',
+      );
+    }
+    final response = await _dio.get('/api/homes/$homeId/energy/budget');
+    final data = _asMap(response.data);
+    return EnergyBudgetData(
+      monthlyBudgetBhd: _asDouble(data['monthly_budget_bhd']),
+      currentMonthCostBhd: _asDouble(data['current_month_cost_bhd']),
+      currentMonthEnergyKwh: _asDouble(data['current_month_energy_kwh']),
+      remainingBudgetBhd: _asDouble(data['remaining_budget_bhd']),
+      percentageUsed: _asDouble(data['percentage_used']),
+      daysRemaining: _asInt(data['days_remaining']),
+      averageDailyCostBhd: _asDouble(data['average_daily_cost_bhd']),
+      recommendedDailyLimitBhd: _asDouble(data['recommended_daily_limit_bhd']),
+      predictedMonthlyCostBhd: _asDouble(data['predicted_monthly_cost_bhd']),
+      predictedDifferenceBhd: _asDouble(data['predicted_difference_bhd']),
+      status: _asString(data['status'], fallback: 'no_budget'),
+      dailyProgress: _asList(
+        data['daily_budget_progress'],
+      ).map(_parseDailyBudgetProgress).toList(),
+      breakerContribution: _asList(
+        data['breaker_contribution'],
+      ).map(_parseBreakerContribution).toList(),
+      monthDataAvailable: _asBool(data['month_data_available']),
+      reasonIfUnavailable: _asString(data['reason_if_unavailable']),
+    );
+  }
+
+  EnergyHistoryPoint _parseEnergyHistoryPoint(Map<String, dynamic> data) {
+    return EnergyHistoryPoint(
+      timestamp: _asDateTime(
+        _pick(data, ['timestamp_ms', 'timestamp_iso', 'date']),
+      ),
+      label: _asString(_pick(data, ['label', 'date', 'period', 'month'])),
+      kwh: _asDouble(_pick(data, ['kwh', 'energy_kwh'])),
+      costBhd: _asDouble(_pick(data, ['cost_bhd', 'costBhd'])),
+      powerW: _asDouble(_pick(data, ['power_w', 'powerW'])),
+    );
+  }
+
+  BreakerContribution _parseBreakerContribution(Map<String, dynamic> data) {
+    final id = _asString(_pick(data, ['breaker_id', 'id']));
+    return BreakerContribution(
+      breakerId: id,
+      name: _asString(_pick(data, ['name']), fallback: id),
+      branch: _asString(_pick(data, ['branch']), fallback: 'Breaker'),
+      energyKwh: _asDouble(_pick(data, ['energy_kwh', 'kwh'])),
+      costBhd: _asDouble(_pick(data, ['cost_bhd', 'costBhd'])),
+      percentage: _asDouble(_pick(data, ['percentage', 'percent'])),
+    );
+  }
+
+  DailyBudgetProgress _parseDailyBudgetProgress(Map<String, dynamic> data) {
+    return DailyBudgetProgress(
+      timestamp: _asDateTime(
+        _pick(data, ['timestamp_ms', 'timestamp_iso', 'date']),
+      ),
+      label: _asString(_pick(data, ['label', 'date', 'period'])),
+      actualCostBhd: _asDouble(
+        _pick(data, ['actual_cost_bhd', 'cost_bhd', 'costBhd']),
+      ),
+      recommendedCostBhd: _asDouble(data['recommended_cost_bhd']),
+      overRecommended: _asBool(data['over_recommended']),
+    );
   }
 
   Future<List<ScheduleInfo>> fetchSchedules({
