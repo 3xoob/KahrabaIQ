@@ -8256,6 +8256,84 @@ def should_run_full_ml(home_id: str, *, force: bool = False, input_source: str =
     return now_ms() - last_run >= AI_FULL_PREDICTION_INTERVAL_SECONDS * 1000
 
 
+def ai_payload_needs_fresh_hardware(
+    payload: dict[str, Any],
+    settings: dict[str, Any],
+) -> tuple[bool, str]:
+    sensor_threshold = as_number(settings.get("sensor_stale_minutes"), 3) * 60
+    breaker_threshold = as_number(settings.get("breaker_stale_minutes"), 3) * 60
+    hub_threshold = as_number(settings.get("hub_offline_minutes"), 5) * 60
+    sensor_stale = (
+        payload.get("sensor_data_fresh") is False
+        or as_number(payload.get("sensor_staleness_seconds")) > sensor_threshold
+    )
+    breaker_stale = (
+        payload.get("breaker_data_fresh") is False
+        or as_number(payload.get("breaker_staleness_seconds")) > breaker_threshold
+    )
+    hub_stale = (
+        payload.get("hub_data_fresh") is False
+        or as_number(payload.get("hub_staleness_seconds")) > hub_threshold
+    )
+    if sensor_stale and breaker_stale:
+        return True, "needs_fresh_hardware_data"
+    if sensor_stale:
+        return True, "needs_fresh_sensor_data"
+    if breaker_stale:
+        return True, "needs_fresh_breaker_data"
+    if hub_stale:
+        return True, "needs_fresh_hub_data"
+    return False, ""
+
+
+def pause_ai_forecast_for_stale_hardware(
+    ai_result: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    label_by_reason = {
+        "needs_fresh_sensor_data": "Waiting for sensors",
+        "needs_fresh_breaker_data": "Waiting for breakers",
+        "needs_fresh_hub_data": "Hub offline",
+        "needs_fresh_hardware_data": "Waiting for fresh data",
+    }
+    message = (
+        "Live sensor or breaker data is stale, so KahrabaIQ paused the "
+        "next-hour forecast until fresh readings arrive."
+    )
+    ai_result.update(
+        {
+            "prediction_status": reason,
+            "ai_status_code": reason,
+            "ai_status_label": label_by_reason.get(reason, "Waiting for fresh data"),
+            "ai_status_tone": "warning",
+            "ai_status_summary": message,
+            "ai_action_title": "Check Pi / sensors / breakers",
+            "recommendation_type": "check_connectivity",
+            "next_hour_energy": 0,
+            "next_hour_cost": 0,
+            "next_hour_energy_kWh": 0,
+            "next_hour_cost_BHD": 0,
+            "next_hour_total_energy_kWh": 0,
+            "next_hour_total_cost_BHD": 0,
+            "explanation": message,
+        }
+    )
+    predictions = as_dict(ai_result.get("predictions"))
+    predictions["next_hour_total_energy_kWh"] = {
+        **as_dict(predictions.get("next_hour_total_energy_kWh")),
+        "value": 0,
+    }
+    predictions["next_hour_total_cost_BHD"] = {
+        **as_dict(predictions.get("next_hour_total_cost_BHD")),
+        "value": 0,
+    }
+    ai_result["predictions"] = predictions
+    ai_result["guardrails_applied"] = sorted(
+        set(object_to_list(ai_result.get("guardrails_applied")) + ["stale_hardware_forecast_paused"])
+    )
+    return ai_result
+
+
 def load_ai_metrics_summary() -> dict[str, Any]:
     metrics_path = Path(__file__).resolve().parent / "devices" / "models" / "smart_energy_ai_metrics.json"
     if not metrics_path.exists():
@@ -8641,9 +8719,16 @@ def run_ec2_ai_prediction(home_id: str, *, force_full_ml: bool = False) -> dict[
     payload, input_source = ai_engine.build_ai_payload(home_id)
     payload = enrich_ai_payload_with_history(home_id, payload)
     payload = enrich_ai_payload_with_settings(home_id, payload, settings)
+    needs_fresh_hardware, stale_hardware_reason = ai_payload_needs_fresh_hardware(
+        payload,
+        settings,
+    )
     safety_notifications = run_immediate_safety_checks(home_id, payload, settings)
     routine_notifications = run_lightweight_anomaly_checks(home_id, payload, settings)
-    ml_ran = should_run_full_ml(home_id, force=force_full_ml, input_source=input_source)
+    ml_ran = (
+        not needs_fresh_hardware
+        and should_run_full_ml(home_id, force=force_full_ml, input_source=input_source)
+    )
     if ml_ran:
         prediction = ai_engine.run_model(payload)
         ai_result = ai_engine.build_ai_result(home_id, payload, prediction, input_source)
@@ -8673,6 +8758,11 @@ def run_ec2_ai_prediction(home_id: str, *, force_full_ml: bool = False) -> dict[
         ai_result = ai_engine.build_ai_result(home_id, payload, prediction, input_source)
     ai_result["source"] = "ec2_ai_inference"
     ai_result["ai_mode"] = "hybrid_ml_rules" if ml_ran and ai_result.get("post_processing_rules") else ("full_ml" if ml_ran else "rule_only")
+    if needs_fresh_hardware:
+        ai_result = pause_ai_forecast_for_stale_hardware(
+            ai_result,
+            stale_hardware_reason,
+        )
     ai_result["ml_ran"] = ml_ran
     ai_result["levels_ran"] = ["immediate_safety", "lightweight_routine"] + (["full_ml"] if ml_ran else [])
     ai_result["anomaly_score"] = 1.0 - as_number(ai_result.get("efficiency_score"), 100) / 100

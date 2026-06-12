@@ -11,6 +11,7 @@ import '../../../core/utils/constants.dart';
 import '../../../core/widgets/alert_banner.dart';
 import '../../../core/widgets/app_state_widgets.dart';
 import '../../../shared/models/alert.dart';
+import '../../../shared/models/ai_insights.dart';
 import '../../../shared/models/device.dart';
 import '../../../shared/models/energy_reading.dart';
 import '../../../shared/models/sensor_data.dart';
@@ -1570,6 +1571,9 @@ class _AiAnalysisSection extends StatelessWidget {
   }
 
   String get _statusLabel {
+    if (_forecastPaused) {
+      return 'Waiting for fresh data';
+    }
     final label = dashboard.aiDashboard?.statusLabel.trim() ?? '';
     return label.isEmpty ? 'Learning' : label;
   }
@@ -1577,6 +1581,9 @@ class _AiAnalysisSection extends StatelessWidget {
   String get _summary {
     if (dashboard.scenarioId != null && dashboard.aiDashboard == null) {
       return 'Demo scenario AI result is being prepared.';
+    }
+    if (_forecastPaused) {
+      return 'Live data is stale, so KahrabaIQ paused forecasting until fresh readings arrive.';
     }
     final ai = dashboard.aiDashboard;
     if (ai != null && ai.statusSummary.trim().isNotEmpty) {
@@ -1589,6 +1596,9 @@ class _AiAnalysisSection extends StatelessWidget {
   }
 
   String get _explanation {
+    if (_forecastPaused) {
+      return 'The Pi, sensors, or breakers need to report fresh data before AI can make a useful next-hour energy prediction.';
+    }
     final ai = dashboard.aiDashboard;
     if (ai != null && ai.explanation.trim().isNotEmpty) {
       return ai.explanation;
@@ -1597,6 +1607,9 @@ class _AiAnalysisSection extends StatelessWidget {
   }
 
   String get _actionText {
+    if (_forecastPaused) {
+      return 'Check Pi / sensors / breakers';
+    }
     final ai = dashboard.aiDashboard;
     if (ai != null && ai.actionTitle.trim().isNotEmpty) {
       return ai.actionTitle;
@@ -1606,6 +1619,77 @@ class _AiAnalysisSection extends StatelessWidget {
       return recommendation.title;
     }
     return 'Waiting for prediction';
+  }
+
+  bool get _forecastPaused {
+    final ai = dashboard.aiDashboard;
+    final aiStatus = [
+      ai?.statusCode,
+      ai?.statusLabel,
+      ai?.recommendationType,
+      ai?.actionTitle,
+    ].whereType<String>().join(' ').toLowerCase();
+    final staleAiStatus =
+        aiStatus.contains('needs_fresh') ||
+        aiStatus.contains('stale_ai') ||
+        aiStatus.contains('check_sensor') ||
+        aiStatus.contains('check_connectivity') ||
+        aiStatus.contains('waiting for fresh');
+    return staleAiStatus ||
+        _hubOffline ||
+        _sensorDataStale ||
+        _breakerDataStale;
+  }
+
+  bool get _hubOffline => dashboard.hubStatus['online'] == false;
+
+  bool get _sensorDataStale {
+    final sensors = dashboard.sensors;
+    if (!sensors.online || sensors.timestamp.year < 2024) {
+      return true;
+    }
+    final staleAfter = Duration(
+      seconds: (_settingsNumber('sensor_stale_minutes', 3) * 60).round(),
+    );
+    return DateTime.now().difference(sensors.timestamp) > staleAfter;
+  }
+
+  bool get _breakerDataStale {
+    final breakers = dashboard.devices
+        .where((device) => device.id.startsWith('breaker_'))
+        .toList();
+    if (breakers.isEmpty) {
+      return false;
+    }
+    return breakers.any((device) => !device.online || device.stale);
+  }
+
+  double _settingsNumber(String key, double fallback) {
+    final value = dashboard.settingsSummary[key];
+    if (value is num) {
+      return value.toDouble();
+    }
+    return double.tryParse(value?.toString() ?? '') ?? fallback;
+  }
+
+  String _energyForecastLabel(AiDashboardSummary? ai) {
+    if (ai == null) {
+      return 'No prediction yet';
+    }
+    if (_forecastPaused) {
+      return '-- kWh';
+    }
+    return '${ai.nextHourEnergyKwh.toStringAsFixed(3)} kWh next hour';
+  }
+
+  String _costForecastLabel(AiDashboardSummary? ai) {
+    if (ai == null) {
+      return 'Cost pending';
+    }
+    if (_forecastPaused) {
+      return '-- BHD';
+    }
+    return '${ai.nextHourCostBhd.toStringAsFixed(3)} BHD';
   }
 
   String get _notificationText {
@@ -1738,15 +1822,11 @@ class _AiAnalysisSection extends StatelessWidget {
             children: [
               _AiMetricChip(
                 icon: Icons.bolt,
-                label: ai == null
-                    ? 'No prediction yet'
-                    : '${ai.nextHourEnergyKwh.toStringAsFixed(3)} kWh next hour',
+                label: _energyForecastLabel(ai),
               ),
               _AiMetricChip(
                 icon: Icons.savings_outlined,
-                label: ai == null
-                    ? 'Cost pending'
-                    : '${ai.nextHourCostBhd.toStringAsFixed(3)} BHD',
+                label: _costForecastLabel(ai),
               ),
               _AiMetricChip(
                 icon: Icons.tips_and_updates_outlined,
