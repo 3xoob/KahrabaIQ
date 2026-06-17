@@ -94,7 +94,12 @@ class _BudgetProgressCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final limit = _settingsNumber(settingsSummary, 'monthly_cost_limit_bhd');
+    final demoMode = settingsSummary['mode'] == 'demo';
+    final limit = _settingsNumber(
+      settingsSummary,
+      'monthly_cost_limit_bhd',
+      fallback: demoMode ? 3.0 : 0,
+    );
     final current = reading.costMonth;
     final percent = limit > 0 ? (current / limit) * 100 : 0.0;
     final status = limit <= 0

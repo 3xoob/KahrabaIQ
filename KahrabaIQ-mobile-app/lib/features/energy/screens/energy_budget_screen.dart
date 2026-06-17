@@ -1,5 +1,5 @@
-import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 import '../../../core/theme/app_text_styles.dart';
 import '../../../core/theme/color_tokens.dart';
@@ -7,9 +7,14 @@ import '../../../core/widgets/app_state_widgets.dart';
 import '../../../shared/services/kahrabaiq_api_service.dart';
 
 class EnergyBudgetScreen extends StatefulWidget {
-  const EnergyBudgetScreen({super.key, required this.homeId});
+  const EnergyBudgetScreen({
+    super.key,
+    required this.homeId,
+    this.scenarioDashboard,
+  });
 
   final String homeId;
+  final DashboardData? scenarioDashboard;
 
   @override
   State<EnergyBudgetScreen> createState() => _EnergyBudgetScreenState();
@@ -22,12 +27,16 @@ class _EnergyBudgetScreenState extends State<EnergyBudgetScreen> {
   @override
   void initState() {
     super.initState();
-    _future = _api.fetchEnergyBudget(homeId: widget.homeId);
+    _future = widget.scenarioDashboard != null
+        ? Future.value(_demoEnergyBudgetData(widget.scenarioDashboard!))
+        : _api.fetchEnergyBudget(homeId: widget.homeId);
   }
 
   Future<void> _reload() async {
     setState(() {
-      _future = _api.fetchEnergyBudget(homeId: widget.homeId);
+      _future = widget.scenarioDashboard != null
+          ? Future.value(_demoEnergyBudgetData(widget.scenarioDashboard!))
+          : _api.fetchEnergyBudget(homeId: widget.homeId);
     });
     await _future;
   }
@@ -83,7 +92,7 @@ class _EnergyBudgetScreenState extends State<EnergyBudgetScreen> {
                 const SizedBox(height: 16),
                 _PredictionCard(data: data),
                 const SizedBox(height: 16),
-                _ProgressChart(data: data),
+                _EstimatedSavingsCard(data: data),
                 const SizedBox(height: 16),
                 _DailyComparison(data: data),
                 const SizedBox(height: 16),
@@ -199,26 +208,67 @@ class _PredictionCard extends StatelessWidget {
   }
 }
 
-class _ProgressChart extends StatelessWidget {
-  const _ProgressChart({required this.data});
+class _EstimatedSavingsCard extends StatelessWidget {
+  const _EstimatedSavingsCard({required this.data});
 
   final EnergyBudgetData data;
 
   @override
   Widget build(BuildContext context) {
-    final points = data.dailyProgress;
+    final savings = data.estimatedSavings;
+    final profile = data.homeLearningProfile;
+    final hasBaseline =
+        savings.baselineKwhToDate > 0 || profile.averageDailyKwh > 0;
+    final confidence = (savings.confidence * 100).clamp(0, 100);
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: _cardDecoration(ColorTokens.primary),
+      decoration: _cardDecoration(ColorTokens.success),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Cost Accumulation', style: AppTextStyles.h3),
-          const SizedBox(height: 14),
-          if (points.isEmpty)
-            const _EmptyInline(message: 'Waiting for cloud summaries.')
-          else
-            SizedBox(height: 190, child: LineChart(_budgetChart(points))),
+          Row(
+            children: [
+              const Icon(Icons.savings_outlined, color: ColorTokens.success),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text('Estimated Savings', style: AppTextStyles.h3),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (!hasBaseline)
+            const _EmptyInline(
+              message:
+                  'The home is still learning. Savings will appear after enough usage summaries are available.',
+            )
+          else ...[
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                _MiniMetric(
+                  'Energy saved',
+                  '${savings.estimatedSavedKwh.toStringAsFixed(3)} kWh',
+                ),
+                _MiniMetric(
+                  'Money saved',
+                  '${savings.estimatedSavedBhd.toStringAsFixed(3)} BHD',
+                ),
+                _MiniMetric(
+                  'Baseline',
+                  '${savings.baselineKwhToDate.toStringAsFixed(2)} kWh',
+                ),
+                _MiniMetric('Confidence', '${confidence.toStringAsFixed(0)}%'),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              savings.note.isNotEmpty
+                  ? savings.note
+                  : 'Savings are estimated by comparing current usage with the learned home baseline.',
+              style: AppTextStyles.caption,
+            ),
+          ],
         ],
       ),
     );
@@ -425,43 +475,6 @@ class _BudgetLoading extends StatelessWidget {
   }
 }
 
-LineChartData _budgetChart(List<DailyBudgetProgress> points) {
-  var running = 0.0;
-  final spots = <FlSpot>[
-    for (var index = 0; index < points.length; index++)
-      FlSpot(index.toDouble(), running += points[index].actualCostBhd),
-  ];
-  final maxY = spots.fold<double>(
-    0,
-    (max, spot) => spot.y > max ? spot.y : max,
-  );
-  return LineChartData(
-    minY: 0,
-    maxY: maxY <= 0 ? 1 : maxY * 1.2,
-    gridData: const FlGridData(show: false),
-    borderData: FlBorderData(show: false),
-    titlesData: const FlTitlesData(
-      leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-      topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-      rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-      bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-    ),
-    lineBarsData: [
-      LineChartBarData(
-        spots: spots,
-        isCurved: true,
-        color: ColorTokens.primary,
-        barWidth: 3,
-        dotData: const FlDotData(show: false),
-        belowBarData: BarAreaData(
-          show: true,
-          color: ColorTokens.primary.withValues(alpha: 0.12),
-        ),
-      ),
-    ],
-  );
-}
-
 BoxDecoration _cardDecoration(Color color) {
   return BoxDecoration(
     color: ColorTokens.surfaceElevated,
@@ -483,4 +496,128 @@ String _statusLabel(String status) {
   if (status == 'near_limit') return 'Near limit';
   if (status == 'no_budget') return 'No budget set';
   return 'On track';
+}
+
+EnergyBudgetData _demoEnergyBudgetData(DashboardData dashboard) {
+  final now = dashboard.reading.timestamp;
+  final tariff = dashboard.tariffBhdPerKwh <= 0
+      ? 0.032
+      : dashboard.tariffBhdPerKwh;
+  const monthlyBudget = 3.0;
+  final currentCost = dashboard.reading.costMonth;
+  final currentKwh = dashboard.reading.energyMonth;
+  final daysElapsed = now.day.clamp(1, 31);
+  final daysInMonth = DateUtils.getDaysInMonth(now.year, now.month);
+  final daysRemaining = (daysInMonth - now.day).clamp(0, daysInMonth);
+  final percentageUsed = monthlyBudget > 0
+      ? (currentCost / monthlyBudget) * 100
+      : 0.0;
+  final averageDailyCost = currentCost / daysElapsed;
+  final remaining = monthlyBudget - currentCost;
+  final recommendedDaily = daysRemaining > 0
+      ? remaining.clamp(0, double.infinity) / daysRemaining
+      : 0.0;
+  final predictedMonthly = averageDailyCost * daysInMonth;
+  final status = currentCost > monthlyBudget
+      ? 'over_budget'
+      : percentageUsed >= 80
+      ? 'near_limit'
+      : 'on_track';
+
+  final baselineDailyKwh = dashboard.reading.energyToday * 0.82;
+  final baselineDailyCost = baselineDailyKwh * tariff;
+  final baselineToDateKwh = baselineDailyKwh * daysElapsed;
+  final baselineToDateCost = baselineDailyCost * daysElapsed;
+  final savedKwh = (baselineToDateKwh - currentKwh).clamp(0, double.infinity);
+  final savedBhd = (baselineToDateCost - currentCost).clamp(0, double.infinity);
+
+  final progress = <DailyBudgetProgress>[
+    for (var index = daysElapsed - 1; index >= 0; index--)
+      DailyBudgetProgress(
+        timestamp: DateTime(now.year, now.month, now.day - index),
+        label: DateFormat(
+          'MMM d',
+        ).format(DateTime(now.year, now.month, now.day - index)),
+        actualCostBhd: index == 0
+            ? dashboard.reading.costToday
+            : baselineDailyCost * (0.75 + (index % 5) * 0.08),
+        recommendedCostBhd: recommendedDaily,
+        overRecommended:
+            (index == 0
+                ? dashboard.reading.costToday
+                : baselineDailyCost * (0.75 + (index % 5) * 0.08)) >
+            recommendedDaily,
+      ),
+  ];
+
+  final breakerTotal = dashboard.devices.fold<double>(
+    0,
+    (sum, device) =>
+        sum +
+        (device.energyToday > 0
+            ? device.energyToday
+            : device.currentPower / 1000),
+  );
+  final breakerContribution =
+      dashboard.devices
+          .where((device) => device.energyToday > 0 || device.currentPower > 0)
+          .map((device) {
+            final energy = device.energyToday > 0
+                ? device.energyToday
+                : device.currentPower / 1000;
+            return BreakerContribution(
+              breakerId: device.id,
+              name: device.name,
+              branch: device.branch,
+              energyKwh: energy,
+              costBhd: energy * tariff,
+              percentage: breakerTotal > 0 ? (energy / breakerTotal) * 100 : 0,
+            );
+          })
+          .toList()
+        ..sort((a, b) => b.energyKwh.compareTo(a.energyKwh));
+
+  final profile = HomeLearningProfile(
+    status: 'demo_ready',
+    adaptiveReadiness: 0.86,
+    averageDailyKwh: baselineDailyKwh,
+    averageDailyCostBhd: baselineDailyCost,
+    expectedMonthlyKwh: baselineDailyKwh * daysInMonth,
+    expectedMonthlyCostBhd: baselineDailyCost * daysInMonth,
+    hourlySummaryCount: 72,
+    dailySummaryCount: 30,
+    trainedAt: now,
+    profileVersion: 'demo_profile_${dashboard.scenarioId}',
+  );
+
+  return EnergyBudgetData(
+    monthlyBudgetBhd: monthlyBudget,
+    currentMonthCostBhd: currentCost,
+    currentMonthEnergyKwh: currentKwh,
+    remainingBudgetBhd: remaining,
+    percentageUsed: percentageUsed,
+    daysRemaining: daysRemaining,
+    averageDailyCostBhd: averageDailyCost,
+    recommendedDailyLimitBhd: recommendedDaily,
+    predictedMonthlyCostBhd: predictedMonthly,
+    predictedDifferenceBhd: predictedMonthly - monthlyBudget,
+    status: status,
+    dailyProgress: progress,
+    breakerContribution: breakerContribution,
+    estimatedSavings: EstimatedSavings(
+      estimatedSavedKwh: savedKwh.toDouble(),
+      estimatedSavedBhd: savedBhd.toDouble(),
+      baselineKwhToDate: baselineToDateKwh,
+      baselineCostToDateBhd: baselineToDateCost,
+      baselineDailyKwh: baselineDailyKwh,
+      baselineDailyCostBhd: baselineDailyCost,
+      confidence: 0.86,
+      method: 'demo_scenario_vs_learned_home_baseline',
+      note:
+          'Demo savings compare the selected scenario usage with a simulated learned home baseline.',
+    ),
+    homeLearningProfile: profile,
+    monthDataAvailable: true,
+    reasonIfUnavailable: '',
+  );
 }

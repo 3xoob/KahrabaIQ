@@ -268,6 +268,7 @@ class EnergyHistoryData {
     required this.costHistory,
     required this.breakerContribution,
     required this.peakUsageHours,
+    required this.homeLearningProfile,
   });
 
   final List<EnergyHistoryPoint> powerHistory;
@@ -277,6 +278,57 @@ class EnergyHistoryData {
   final List<EnergyHistoryPoint> costHistory;
   final List<BreakerContribution> breakerContribution;
   final List<EnergyHistoryPoint> peakUsageHours;
+  final HomeLearningProfile homeLearningProfile;
+}
+
+class HomeLearningProfile {
+  const HomeLearningProfile({
+    required this.status,
+    required this.adaptiveReadiness,
+    required this.averageDailyKwh,
+    required this.averageDailyCostBhd,
+    required this.expectedMonthlyKwh,
+    required this.expectedMonthlyCostBhd,
+    required this.hourlySummaryCount,
+    required this.dailySummaryCount,
+    required this.trainedAt,
+    required this.profileVersion,
+  });
+
+  final String status;
+  final double adaptiveReadiness;
+  final double averageDailyKwh;
+  final double averageDailyCostBhd;
+  final double expectedMonthlyKwh;
+  final double expectedMonthlyCostBhd;
+  final int hourlySummaryCount;
+  final int dailySummaryCount;
+  final DateTime? trainedAt;
+  final String profileVersion;
+}
+
+class EstimatedSavings {
+  const EstimatedSavings({
+    required this.estimatedSavedKwh,
+    required this.estimatedSavedBhd,
+    required this.baselineKwhToDate,
+    required this.baselineCostToDateBhd,
+    required this.baselineDailyKwh,
+    required this.baselineDailyCostBhd,
+    required this.confidence,
+    required this.method,
+    required this.note,
+  });
+
+  final double estimatedSavedKwh;
+  final double estimatedSavedBhd;
+  final double baselineKwhToDate;
+  final double baselineCostToDateBhd;
+  final double baselineDailyKwh;
+  final double baselineDailyCostBhd;
+  final double confidence;
+  final String method;
+  final String note;
 }
 
 class DailyBudgetProgress {
@@ -310,6 +362,8 @@ class EnergyBudgetData {
     required this.status,
     required this.dailyProgress,
     required this.breakerContribution,
+    required this.estimatedSavings,
+    required this.homeLearningProfile,
     required this.monthDataAvailable,
     required this.reasonIfUnavailable,
   });
@@ -327,6 +381,8 @@ class EnergyBudgetData {
   final String status;
   final List<DailyBudgetProgress> dailyProgress;
   final List<BreakerContribution> breakerContribution;
+  final EstimatedSavings estimatedSavings;
+  final HomeLearningProfile homeLearningProfile;
   final bool monthDataAvailable;
   final String reasonIfUnavailable;
 }
@@ -691,6 +747,10 @@ class KahrabaIqApiService {
         .toList();
 
     var parsedAi = _parseAiDashboard(aiResult);
+    final staleScenarioAi = _scenarioAiLooksStale(parsedAi);
+    if (staleScenarioAi && dashboard.aiDashboard != null) {
+      parsedAi = dashboard.aiDashboard;
+    }
     if (parsedAi != null &&
         parsedAi.nextHourEnergyKwh <= 0 &&
         dashboard.reading.power > 0) {
@@ -737,6 +797,25 @@ class KahrabaIqApiService {
       },
       deviceControlEnabled: false,
     );
+  }
+
+  bool _scenarioAiLooksStale(AiDashboardSummary? ai) {
+    if (ai == null) {
+      return false;
+    }
+    final text = [
+      ai.statusCode,
+      ai.statusLabel,
+      ai.statusSummary,
+      ai.recommendationType,
+      ai.actionTitle,
+    ].join(' ').toLowerCase();
+    return text.contains('needs_fresh') ||
+        text.contains('waiting for fresh') ||
+        text.contains('check pi') ||
+        text.contains('check_sensor') ||
+        text.contains('check_connectivity') ||
+        text.contains('stale');
   }
 
   Future<Map<String, dynamic>> fetchAiLatest({required String homeId}) async {
@@ -2067,6 +2146,18 @@ class KahrabaIqApiService {
         costHistory: [],
         breakerContribution: [],
         peakUsageHours: [],
+        homeLearningProfile: HomeLearningProfile(
+          status: 'learning',
+          adaptiveReadiness: 0,
+          averageDailyKwh: 0,
+          averageDailyCostBhd: 0,
+          expectedMonthlyKwh: 0,
+          expectedMonthlyCostBhd: 0,
+          hourlySummaryCount: 0,
+          dailySummaryCount: 0,
+          trainedAt: null,
+          profileVersion: '',
+        ),
       );
     }
     final response = await _dio.get('/api/homes/$homeId/energy/history');
@@ -2093,6 +2184,9 @@ class KahrabaIqApiService {
       peakUsageHours: _asList(
         data['peak_usage_hours'],
       ).map(_parseEnergyHistoryPoint).toList(),
+      homeLearningProfile: _parseHomeLearningProfile(
+        _asMap(data['home_learning_profile']),
+      ),
     );
   }
 
@@ -2112,6 +2206,29 @@ class KahrabaIqApiService {
         status: 'no_budget',
         dailyProgress: [],
         breakerContribution: [],
+        estimatedSavings: EstimatedSavings(
+          estimatedSavedKwh: 0,
+          estimatedSavedBhd: 0,
+          baselineKwhToDate: 0,
+          baselineCostToDateBhd: 0,
+          baselineDailyKwh: 0,
+          baselineDailyCostBhd: 0,
+          confidence: 0,
+          method: '',
+          note: '',
+        ),
+        homeLearningProfile: HomeLearningProfile(
+          status: 'learning',
+          adaptiveReadiness: 0,
+          averageDailyKwh: 0,
+          averageDailyCostBhd: 0,
+          expectedMonthlyKwh: 0,
+          expectedMonthlyCostBhd: 0,
+          hourlySummaryCount: 0,
+          dailySummaryCount: 0,
+          trainedAt: null,
+          profileVersion: '',
+        ),
         monthDataAvailable: false,
         reasonIfUnavailable: '',
       );
@@ -2136,8 +2253,47 @@ class KahrabaIqApiService {
       breakerContribution: _asList(
         data['breaker_contribution'],
       ).map(_parseBreakerContribution).toList(),
+      estimatedSavings: _parseEstimatedSavings(
+        _asMap(data['estimated_savings']),
+      ),
+      homeLearningProfile: _parseHomeLearningProfile(
+        _asMap(data['home_learning_profile']),
+      ),
       monthDataAvailable: _asBool(data['month_data_available']),
       reasonIfUnavailable: _asString(data['reason_if_unavailable']),
+    );
+  }
+
+  HomeLearningProfile _parseHomeLearningProfile(Map<String, dynamic> data) {
+    return HomeLearningProfile(
+      status: _asString(data['status'], fallback: 'learning'),
+      adaptiveReadiness: _asDouble(data['adaptive_readiness']),
+      averageDailyKwh: _asDouble(data['average_daily_kwh']),
+      averageDailyCostBhd: _asDouble(data['average_daily_cost_bhd']),
+      expectedMonthlyKwh: _asDouble(data['expected_monthly_kwh']),
+      expectedMonthlyCostBhd: _asDouble(data['expected_monthly_cost_bhd']),
+      hourlySummaryCount: _asInt(data['hourly_summary_count']),
+      dailySummaryCount: _asInt(data['daily_summary_count']),
+      trainedAt:
+          data.containsKey('trained_at_ms') ||
+              data.containsKey('trained_at_iso')
+          ? _asDateTime(_pick(data, ['trained_at_ms', 'trained_at_iso']))
+          : null,
+      profileVersion: _asString(data['profile_version']),
+    );
+  }
+
+  EstimatedSavings _parseEstimatedSavings(Map<String, dynamic> data) {
+    return EstimatedSavings(
+      estimatedSavedKwh: _asDouble(data['estimated_saved_kwh']),
+      estimatedSavedBhd: _asDouble(data['estimated_saved_bhd']),
+      baselineKwhToDate: _asDouble(data['baseline_kwh_to_date']),
+      baselineCostToDateBhd: _asDouble(data['baseline_cost_to_date_bhd']),
+      baselineDailyKwh: _asDouble(data['baseline_daily_kwh']),
+      baselineDailyCostBhd: _asDouble(data['baseline_daily_cost_bhd']),
+      confidence: _asDouble(data['confidence']),
+      method: _asString(data['method']),
+      note: _asString(data['note']),
     );
   }
 
@@ -2400,6 +2556,18 @@ class KahrabaIqApiService {
     return _asString(
       _asMap(response.data)['message'],
       fallback: 'Home deleted. Its Pi will return to pairing mode when online.',
+    );
+  }
+
+  Future<String> retrainHomeLearningProfile({required String homeId}) async {
+    final response = await _dio.post('/api/admin/homes/$homeId/ai/retrain');
+    final data = _asMap(response.data);
+    final profile = _asMap(data['profile']);
+    final readiness = _asDouble(profile['adaptive_readiness']);
+    return _asString(
+      data['message'],
+      fallback:
+          'Home learning profile rebuilt. Readiness ${(readiness * 100).toStringAsFixed(0)}%.',
     );
   }
 

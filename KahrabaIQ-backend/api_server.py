@@ -2698,6 +2698,20 @@ def admin_home_detail(home_id: str, actor: AuthContext = Depends(require_platfor
     return {"success": True, "home_id": home_id, "home": {"home_id": home_id, **home}, "pi": pi, "members": members, "invites": invites}
 
 
+@app.post("/api/admin/homes/{home_id}/ai/retrain")
+def admin_retrain_home_ai(home_id: str, actor: AuthContext = Depends(require_platform_admin)) -> dict[str, Any]:
+    if not home_exists(home_id):
+        raise HTTPException(status_code=404, detail="Home does not exist.")
+    profile = train_home_learning_profile(home_id, actor_id=actor.actor_id)
+    audit_log(home_id, actor, "home_ai_retrained", "home_learning_profile", home_id, {"profile_version": profile.get("profile_version")})
+    return {
+        "success": True,
+        "home_id": home_id,
+        "message": "Home learning profile rebuilt from recent energy summaries.",
+        "profile": profile,
+    }
+
+
 def queue_pi_reset_pairing(pi_id: str, home_id: str, actor: AuthContext) -> str:
     timestamp_ms = now_ms()
     command_id = f"admin_reset_{timestamp_ms}_{secrets.token_hex(3)}"
@@ -7897,6 +7911,122 @@ def energy_history_point(summary: dict[str, Any], period: str, tariff: float) ->
     }
 
 
+def summary_day_key(summary: dict[str, Any]) -> str:
+    timestamp_ms = summary_timestamp_ms(summary)
+    if timestamp_ms <= 0:
+        return ""
+    return datetime.fromtimestamp(timestamp_ms / 1000, tz=BAHRAIN_TZ).strftime("%Y-%m-%d")
+
+
+def learned_home_profile(home_id: str) -> dict[str, Any]:
+    return as_dict(safe_get(f"/homes/{home_id}/ai/home_learning_profile", {}))
+
+
+def train_home_learning_profile(home_id: str, *, actor_id: str = "system") -> dict[str, Any]:
+    settings = ensure_settings(home_id)
+    tariff = as_number(settings.get("cost_per_kwh"), 0.029)
+    hourly = query_summaries_between(home_id, "hourly", limit=24 * 30)
+    daily = query_summaries_between(home_id, "daily", limit=90)
+    hourly_by_hour: dict[int, list[float]] = {}
+    hourly_power_by_hour: dict[int, list[float]] = {}
+    for summary in hourly:
+        hour = summary_hour(summary)
+        if hour is None or hour < 0:
+            continue
+        hourly_by_hour.setdefault(hour, []).append(summary_energy_value(summary))
+        hourly_power_by_hour.setdefault(hour, []).append(summary_power_value(summary))
+
+    daily_energy = [summary_energy_value(summary) for summary in daily if summary_energy_value(summary) > 0]
+    if not daily_energy and hourly:
+        totals_by_day: dict[str, float] = {}
+        for summary in hourly:
+            day = summary_day_key(summary)
+            if not day:
+                continue
+            totals_by_day[day] = totals_by_day.get(day, 0.0) + summary_energy_value(summary)
+        daily_energy = [value for value in totals_by_day.values() if value > 0]
+
+    normal_hourly_kwh = {
+        str(hour): round(sum(values) / len(values), 6)
+        for hour, values in hourly_by_hour.items()
+        if values
+    }
+    normal_hourly_power_w = {
+        str(hour): round(sum(values) / len(values), 3)
+        for hour, values in hourly_power_by_hour.items()
+        if values
+    }
+    average_daily_kwh = round(sum(daily_energy) / len(daily_energy), 6) if daily_energy else 0.0
+    average_daily_cost = round(average_daily_kwh * tariff, 6)
+    peak_hour = None
+    if normal_hourly_kwh:
+        peak_hour = max(normal_hourly_kwh.items(), key=lambda item: as_number(item[1]))[0]
+
+    readiness = min(1.0, (len(hourly) / 72) * 0.7 + (len(daily_energy) / 14) * 0.3)
+    timestamp_ms = now_ms()
+    profile = {
+        "home_id": home_id,
+        "profile_version": f"home_profile_{timestamp_ms}",
+        "trained_at_ms": timestamp_ms,
+        "trained_at_iso": iso_from_ms(timestamp_ms),
+        "trained_by": actor_id,
+        "hourly_summary_count": len(hourly),
+        "daily_summary_count": len(daily_energy),
+        "normal_hourly_kwh": normal_hourly_kwh,
+        "normal_hourly_power_w": normal_hourly_power_w,
+        "average_daily_kwh": average_daily_kwh,
+        "average_daily_cost_bhd": average_daily_cost,
+        "expected_monthly_kwh": round(average_daily_kwh * 30, 6),
+        "expected_monthly_cost_bhd": round(average_daily_cost * 30, 6),
+        "peak_usage_hour": int(peak_hour) if peak_hour is not None else None,
+        "adaptive_readiness": round(readiness, 3),
+        "status": "learning" if readiness < 0.6 else "ready",
+        "method": "adaptive_home_profile_from_hourly_daily_summaries",
+        "notes": [
+            "This updates the home-specific baseline profile.",
+            "The global ML model is not automatically replaced without validation.",
+        ],
+    }
+    safe_set(f"/homes/{home_id}/ai/home_learning_profile", profile)
+    return profile
+
+
+def ensure_home_learning_profile(home_id: str) -> dict[str, Any]:
+    profile = learned_home_profile(home_id)
+    if profile:
+        return profile
+    return train_home_learning_profile(home_id)
+
+
+def estimated_savings_summary(
+    *,
+    profile: dict[str, Any],
+    current_kwh: float,
+    current_cost: float,
+    days_elapsed: int,
+    tariff: float,
+) -> dict[str, Any]:
+    baseline_daily_kwh = as_number(profile.get("average_daily_kwh"))
+    baseline_daily_cost = as_number(profile.get("average_daily_cost_bhd"))
+    if baseline_daily_cost <= 0 and baseline_daily_kwh > 0:
+        baseline_daily_cost = baseline_daily_kwh * tariff
+    baseline_kwh_to_date = baseline_daily_kwh * max(days_elapsed, 1)
+    baseline_cost_to_date = baseline_daily_cost * max(days_elapsed, 1)
+    saved_kwh = max(0.0, baseline_kwh_to_date - current_kwh)
+    saved_cost = max(0.0, baseline_cost_to_date - current_cost)
+    return {
+        "estimated_saved_kwh": round(saved_kwh, 6),
+        "estimated_saved_bhd": round(saved_cost, 6),
+        "baseline_kwh_to_date": round(baseline_kwh_to_date, 6),
+        "baseline_cost_to_date_bhd": round(baseline_cost_to_date, 6),
+        "baseline_daily_kwh": round(baseline_daily_kwh, 6),
+        "baseline_daily_cost_bhd": round(baseline_daily_cost, 6),
+        "confidence": as_number(profile.get("adaptive_readiness")),
+        "method": "current_month_vs_home_learning_profile_baseline",
+        "note": "Savings are estimated against the learned home baseline, not a guaranteed exact counterfactual.",
+    }
+
+
 def breaker_contribution_from_summaries(
     summaries: list[dict[str, Any]],
     tariff: float,
@@ -7992,6 +8122,7 @@ def sort_history_points(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def build_energy_history_response(home_id: str) -> dict[str, Any]:
     settings = ensure_settings(home_id)
     tariff = as_number(settings.get("cost_per_kwh"), 0.029)
+    profile = ensure_home_learning_profile(home_id)
     hourly = query_summaries_between(home_id, "hourly", limit=168)
     daily = query_summaries_between(home_id, "daily", limit=90)
     monthly = query_summaries_between(home_id, "monthly", limit=12)
@@ -8018,6 +8149,7 @@ def build_energy_history_response(home_id: str) -> dict[str, Any]:
         "cost_history": daily_points if daily_points else monthly_points,
         "breaker_contribution": breaker_contribution_from_summaries(recent_for_breakers, tariff),
         "peak_usage_hours": peak_hours,
+        "home_learning_profile": profile,
         "settings": settings_summary(settings),
     }
 
@@ -8025,6 +8157,7 @@ def build_energy_history_response(home_id: str) -> dict[str, Any]:
 def build_energy_budget_response(home_id: str) -> dict[str, Any]:
     settings = ensure_settings(home_id)
     tariff = as_number(settings.get("cost_per_kwh"), 0.029)
+    profile = ensure_home_learning_profile(home_id)
     budget = as_number(settings.get("monthly_cost_limit_bhd"))
     now_dt = datetime.now(BAHRAIN_TZ)
     month_start = datetime(now_dt.year, now_dt.month, 1, tzinfo=BAHRAIN_TZ)
@@ -8067,6 +8200,13 @@ def build_energy_budget_response(home_id: str) -> dict[str, Any]:
         }
         for point in progress
     ]
+    savings = estimated_savings_summary(
+        profile=profile,
+        current_kwh=current_kwh,
+        current_cost=current_cost,
+        days_elapsed=days_elapsed,
+        tariff=tariff,
+    )
     return {
         "success": True,
         "home_id": home_id,
@@ -8083,6 +8223,8 @@ def build_energy_budget_response(home_id: str) -> dict[str, Any]:
         "status": status,
         "daily_budget_progress": daily_budget_progress,
         "breaker_contribution": breaker_contribution_from_summaries(hourly if hourly else daily, tariff),
+        "estimated_savings": savings,
+        "home_learning_profile": profile,
         "month_data_available": bool(month_summary.get("month_data_available")),
         "month_source": month_summary.get("month_source"),
         "reason_if_unavailable": month_summary.get("reason_if_unavailable"),

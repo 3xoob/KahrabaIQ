@@ -115,7 +115,7 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() {
           _dashboard = cachedForDisplay;
           _isLoading = !NetworkConfig.useCognitoAuth;
-          _dashboardNotice = _feedPauseNotice(cachedForDisplay);
+          _dashboardNotice = null;
         });
       }
     }
@@ -125,7 +125,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _error = null;
       _dashboardNotice = _dashboard == null
           ? 'Loading latest dashboard...'
-          : _feedPauseNotice(_dashboard!);
+          : null;
     });
 
     String? pairedHomeId;
@@ -208,8 +208,7 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() {
           _isLoading = false;
           _isResolvingHomeAccess = false;
-          _dashboardNotice =
-              'Could not refresh from EC2. Showing the latest saved dashboard data.';
+          _dashboardNotice = null;
         });
         return;
       }
@@ -271,9 +270,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _isLoading = false;
       _isResolvingHomeAccess = false;
       _error = null;
-      _dashboardNotice = NetworkConfig.useAwsIotLive
-          ? _feedPauseNotice(mergedDashboard)
-          : null;
+      _dashboardNotice = NetworkConfig.useAwsIotLive ? null : null;
     });
   }
 
@@ -298,8 +295,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     setState(() {
       _dashboard = _dashboardAsOffline(dashboard, liveAge);
-      _dashboardNotice =
-          'Pi live data stopped ${liveAge.inSeconds}s ago. Showing the hub as offline until fresh data arrives.';
+      _dashboardNotice = null;
     });
   }
 
@@ -733,7 +729,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_dashboard == null) {
       setState(() {
         _isLoading = false;
-        _dashboardNotice = 'Waiting for the latest dashboard snapshot.';
+        _dashboardNotice = null;
       });
       return;
     }
@@ -746,31 +742,11 @@ class _HomeScreenState extends State<HomeScreen> {
           dashboard,
           DateTime.now().difference(lastLive),
         );
-        _dashboardNotice =
-            'Pi live data is not arriving. Showing the hub as offline until fresh data arrives.';
+        _dashboardNotice = null;
       } else {
-        _dashboardNotice = _feedPauseNotice(dashboard);
+        _dashboardNotice = null;
       }
     });
-  }
-
-  String? _feedPauseNotice(DashboardData dashboard) {
-    if (dashboard.scenarioId != null) {
-      return null;
-    }
-    final breakersPaused = dashboard.devices
-        .where((device) => device.id.startsWith('breaker_'))
-        .any((device) => !device.online || device.stale);
-    final sensorsPaused = !dashboard.sensors.online;
-    final paused = <String>[
-      if (breakersPaused) 'breakers',
-      if (sensorsPaused) 'sensors',
-    ];
-    if (paused.isEmpty) {
-      return null;
-    }
-    final label = paused.join(' and ');
-    return '${label[0].toUpperCase()}${label.substring(1)} data updates are paused. Showing the latest available dashboard data.';
   }
 
   Future<DashboardData?> _loadCachedDashboard() async {
@@ -924,9 +900,13 @@ class _HomeScreenState extends State<HomeScreen> {
                       const SizedBox(height: 16),
                       _DashboardNotice(message: _dashboardNotice!),
                     ],
-                    if (_hubOfflineNotice(dashboard) != null) ...[
+                    if (_sensorPauseNotice(dashboard) != null) ...[
                       const SizedBox(height: 16),
-                      _DashboardNotice(message: _hubOfflineNotice(dashboard)!),
+                      _DashboardNotice(message: _sensorPauseNotice(dashboard)!),
+                    ],
+                    if (_hubPauseNotice(dashboard) != null) ...[
+                      const SizedBox(height: 16),
+                      _DashboardNotice(message: _hubPauseNotice(dashboard)!),
                     ],
                     if (NetworkConfig.enableDemoScenarios) ...[
                       const SizedBox(height: 16),
@@ -1176,22 +1156,63 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _openBudget() {
+    final dashboard = _dashboard;
     Navigator.of(context).push(
       fadeSlideRoute(
-        EnergyBudgetScreen(homeId: _homeId ?? NetworkConfig.defaultHomeId),
+        EnergyBudgetScreen(
+          homeId: _homeId ?? NetworkConfig.defaultHomeId,
+          scenarioDashboard: dashboard?.scenarioId != null ? dashboard : null,
+        ),
       ),
     );
   }
 
-  String? _hubOfflineNotice(DashboardData dashboard) {
+  String? _sensorPauseNotice(DashboardData dashboard) {
     if (dashboard.scenarioId != null) {
       return null;
     }
-    final online = dashboard.hubStatus['online'];
-    if (online == false) {
-      return 'Hub offline. Showing latest cloud data.';
+    final sensors = dashboard.sensors;
+    if (!sensors.online || sensors.timestamp.year < 2024) {
+      return 'Sensor data updates are paused.';
+    }
+    final staleAfter = Duration(
+      seconds:
+          (_dashboardSettingsNumber(
+                    dashboard.settingsSummary,
+                    'sensor_stale_minutes',
+                    fallback: 3,
+                  ) *
+                  60)
+              .round(),
+    );
+    if (DateTime.now().difference(sensors.timestamp) > staleAfter) {
+      return 'Sensor data updates are paused.';
     }
     return null;
+  }
+
+  String? _hubPauseNotice(DashboardData dashboard) {
+    if (dashboard.scenarioId != null) {
+      return null;
+    }
+    final hubOnline = dashboard.hubStatus['online'];
+    final hubStale = dashboard.hubStatus['stale'];
+    if (hubOnline == false || hubStale == true) {
+      return 'Pi hub updates are paused.';
+    }
+    return null;
+  }
+
+  double _dashboardSettingsNumber(
+    Map<String, dynamic> values,
+    String key, {
+    required double fallback,
+  }) {
+    final value = values[key];
+    if (value is num) {
+      return value.toDouble();
+    }
+    return double.tryParse(value?.toString() ?? '') ?? fallback;
   }
 
   Future<void> _activateDemoScenario(DemoScenarioData scenario) async {
@@ -1656,6 +1677,9 @@ class _AiAnalysisSection extends StatelessWidget {
   }
 
   bool get _forecastPaused {
+    if (dashboard.scenarioId != null) {
+      return false;
+    }
     final ai = dashboard.aiDashboard;
     final aiStatus = [
       ai?.statusCode,

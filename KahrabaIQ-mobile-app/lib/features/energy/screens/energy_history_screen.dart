@@ -28,12 +28,16 @@ class _EnergyHistoryScreenState extends State<EnergyHistoryScreen> {
   @override
   void initState() {
     super.initState();
-    _future = _api.fetchEnergyHistory(homeId: widget.homeId);
+    _future = widget.dashboard.scenarioId != null
+        ? Future.value(_demoEnergyHistoryData(widget.dashboard))
+        : _api.fetchEnergyHistory(homeId: widget.homeId);
   }
 
   Future<void> _reload() async {
     setState(() {
-      _future = _api.fetchEnergyHistory(homeId: widget.homeId);
+      _future = widget.dashboard.scenarioId != null
+          ? Future.value(_demoEnergyHistoryData(widget.dashboard))
+          : _api.fetchEnergyHistory(homeId: widget.homeId);
     });
     await _future;
   }
@@ -989,6 +993,158 @@ LineChartData _chartData(
       ),
     ],
   );
+}
+
+EnergyHistoryData _demoEnergyHistoryData(DashboardData dashboard) {
+  final now = dashboard.reading.timestamp;
+  final tariff = dashboard.tariffBhdPerKwh <= 0
+      ? 0.032
+      : dashboard.tariffBhdPerKwh;
+  final basePower = _demoHistoryNumber(
+    dashboard.settingsSummary,
+    'recent_power_avg',
+    fallback: dashboard.reading.power * 0.45,
+  );
+  final baseHourlyKwh = _demoHistoryNumber(
+    dashboard.settingsSummary,
+    'same_hour_energy_avg',
+    fallback: basePower / 1000,
+  );
+  final currentHourlyKwh = dashboard.reading.power > 0
+      ? dashboard.reading.power / 1000
+      : dashboard.reading.energyToday / 8;
+
+  final hourly = <EnergyHistoryPoint>[
+    for (var index = 23; index >= 0; index--)
+      EnergyHistoryPoint(
+        timestamp: now.subtract(Duration(hours: index)),
+        label: DateFormat('HH:mm').format(now.subtract(Duration(hours: index))),
+        kwh: index == 0 ? currentHourlyKwh : baseHourlyKwh * _demoWave(index),
+        costBhd:
+            (index == 0 ? currentHourlyKwh : baseHourlyKwh * _demoWave(index)) *
+            tariff,
+        powerW: index == 0
+            ? dashboard.reading.power
+            : basePower * _demoWave(index),
+      ),
+  ];
+
+  final daily = <EnergyHistoryPoint>[
+    for (var index = 29; index >= 0; index--)
+      EnergyHistoryPoint(
+        timestamp: DateTime(
+          now.year,
+          now.month,
+          now.day,
+        ).subtract(Duration(days: index)),
+        label: DateFormat('yyyy-MM-dd').format(
+          DateTime(
+            now.year,
+            now.month,
+            now.day,
+          ).subtract(Duration(days: index)),
+        ),
+        kwh: index == 0
+            ? dashboard.reading.energyToday
+            : (dashboard.reading.energyToday * 0.72) * _demoWave(index),
+        costBhd: index == 0
+            ? dashboard.reading.costToday
+            : (dashboard.reading.energyToday * 0.72) *
+                  _demoWave(index) *
+                  tariff,
+        powerW: 0,
+      ),
+  ];
+
+  final monthly = <EnergyHistoryPoint>[
+    for (var index = 5; index >= 0; index--)
+      EnergyHistoryPoint(
+        timestamp: DateTime(now.year, now.month - index),
+        label: DateFormat(
+          'yyyy-MM',
+        ).format(DateTime(now.year, now.month - index)),
+        kwh: index == 0
+            ? dashboard.reading.energyMonth
+            : dashboard.reading.energyMonth * (0.78 + (5 - index) * 0.035),
+        costBhd: index == 0
+            ? dashboard.reading.costMonth
+            : dashboard.reading.energyMonth *
+                  (0.78 + (5 - index) * 0.035) *
+                  tariff,
+        powerW: 0,
+      ),
+  ];
+
+  final breakerEnergy = dashboard.devices.fold<double>(
+    0,
+    (sum, device) => sum + device.energyToday,
+  );
+  final contributions =
+      dashboard.devices
+          .where((device) => device.energyToday > 0 || device.currentPower > 0)
+          .map((device) {
+            final energy = device.energyToday > 0
+                ? device.energyToday
+                : device.currentPower / 1000;
+            final total = breakerEnergy > 0
+                ? breakerEnergy
+                : dashboard.reading.energyToday;
+            return BreakerContribution(
+              breakerId: device.id,
+              name: device.name,
+              branch: device.branch,
+              energyKwh: energy,
+              costBhd: energy * tariff,
+              percentage: total > 0 ? (energy / total) * 100 : 0,
+            );
+          })
+          .toList()
+        ..sort((a, b) => b.energyKwh.compareTo(a.energyKwh));
+
+  final profile = HomeLearningProfile(
+    status: 'demo_ready',
+    adaptiveReadiness: 0.86,
+    averageDailyKwh: dashboard.reading.energyToday * 0.78,
+    averageDailyCostBhd: dashboard.reading.energyToday * 0.78 * tariff,
+    expectedMonthlyKwh: dashboard.reading.energyToday * 0.78 * 30,
+    expectedMonthlyCostBhd: dashboard.reading.energyToday * 0.78 * 30 * tariff,
+    hourlySummaryCount: 72,
+    dailySummaryCount: 30,
+    trainedAt: now,
+    profileVersion: 'demo_profile_${dashboard.scenarioId}',
+  );
+
+  return EnergyHistoryData(
+    powerHistory: hourly
+        .skip(hourly.length > 12 ? hourly.length - 12 : 0)
+        .toList(),
+    hourlyUsage: hourly,
+    dailyEnergy: daily,
+    monthlyEnergy: monthly,
+    costHistory: daily,
+    breakerContribution: contributions,
+    peakUsageHours: [...hourly]..sort((a, b) => b.kwh.compareTo(a.kwh)),
+    homeLearningProfile: profile,
+  );
+}
+
+double _demoHistoryNumber(
+  Map<String, dynamic> settings,
+  String key, {
+  required double fallback,
+}) {
+  final history = settings['recent_history'];
+  if (history is Map) {
+    final value = history[key];
+    if (value is num) {
+      return value.toDouble();
+    }
+  }
+  return fallback;
+}
+
+double _demoWave(int index) {
+  return 0.82 + ((index % 5) * 0.07);
 }
 
 BoxDecoration _cardDecoration() {
