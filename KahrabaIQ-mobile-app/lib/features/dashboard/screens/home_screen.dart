@@ -20,6 +20,7 @@ import '../../../shared/services/kahrabaiq_api_service.dart';
 import '../../../shared/services/notification_service.dart';
 import '../../ai_chat/screens/ai_chatbot_screen.dart';
 import '../../demo/demo_scenarios.dart';
+import '../../demo/screens/ai_impact_showcase_screen.dart';
 import '../../demo/widgets/demo_scenario_selector.dart';
 import '../../energy/screens/energy_budget_screen.dart';
 import '../../energy/screens/energy_history_screen.dart';
@@ -916,6 +917,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         isGeneratingAi: _scenarioAiBusy,
                         onSelect: _activateDemoScenario,
                         onReturnToLive: _returnToLiveData,
+                        onOpenImpactShowcase: _openImpactShowcase,
                       ),
                     ],
                     const SizedBox(height: 24),
@@ -1490,6 +1492,10 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _openGlobalAdmin() async {
     await Navigator.of(context).push(fadeSlideRoute(const GlobalAdminScreen()));
     await _loadDashboard();
+  }
+
+  void _openImpactShowcase() {
+    Navigator.of(context).push(fadeSlideRoute(const AiImpactShowcaseScreen()));
   }
 
   String _displayName() {

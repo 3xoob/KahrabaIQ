@@ -12,6 +12,7 @@ class DemoScenarioSelector extends StatelessWidget {
     required this.isGeneratingAi,
     required this.onSelect,
     required this.onReturnToLive,
+    required this.onOpenImpactShowcase,
   });
 
   final List<DemoScenarioData> scenarios;
@@ -19,6 +20,7 @@ class DemoScenarioSelector extends StatelessWidget {
   final bool isGeneratingAi;
   final ValueChanged<DemoScenarioData> onSelect;
   final VoidCallback onReturnToLive;
+  final VoidCallback onOpenImpactShowcase;
 
   @override
   Widget build(BuildContext context) {
@@ -36,43 +38,62 @@ class DemoScenarioSelector extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                  color: ColorTokens.primary.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(
-                  Icons.science_outlined,
-                  color: ColorTokens.primary,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+          InkWell(
+            onTap: onOpenImpactShowcase,
+            borderRadius: BorderRadius.circular(14),
+            child: Padding(
+              padding: const EdgeInsets.all(2),
+              child: Row(
+                children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: ColorTokens.primary.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(
+                      Icons.science_outlined,
+                      color: ColorTokens.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Demo Scenarios', style: AppTextStyles.h3),
-                        if (isActive) ...[
-                          const SizedBox(width: 8),
-                          const _DemoBadge(),
-                        ],
+                        Row(
+                          children: [
+                            Text('Demo Scenarios', style: AppTextStyles.h3),
+                            if (isActive) ...[
+                              const SizedBox(width: 8),
+                              const _DemoBadge(),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Test AI behavior and view energy savings impact.',
+                          style: AppTextStyles.caption,
+                        ),
                       ],
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      'Test AI behavior using simulated home conditions.',
-                      style: AppTextStyles.caption,
-                    ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(width: 8),
+                  const Icon(
+                    Icons.arrow_forward_ios,
+                    color: ColorTokens.textSecondary,
+                    size: 16,
+                  ),
+                ],
               ),
-            ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: onOpenImpactShowcase,
+            icon: const Icon(Icons.insights_outlined),
+            label: const Text('View AI Impact Showcase'),
           ),
           const SizedBox(height: 14),
           SizedBox(

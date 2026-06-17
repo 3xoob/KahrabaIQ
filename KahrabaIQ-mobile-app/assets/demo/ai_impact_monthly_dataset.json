@@ -1,0 +1,76 @@
+{
+  "dataset_id": "kahrabaiq_ai_impact_controlled_month_v2",
+  "dataset_type": "controlled_simulated_evaluation",
+  "scenario_label": "30-day simulated scenario",
+  "home_profile": "Small family apartment with regular evening AC usage, standby socket loads, and repeated empty-room energy waste.",
+  "tariff_bhd_per_kwh": 0.032,
+  "baseline_month": "Without KahrabaIQ",
+  "assisted_month": "Recommendations followed",
+  "notes": [
+    "This is an estimated simulation based on the selected household scenario.",
+    "Actual savings depend on occupancy, weather, appliance efficiency, usage behaviour, and whether recommendations are followed."
+  ],
+  "assumptions": [
+    "30-day simulation",
+    "Small family apartment",
+    "Regular evening AC operation",
+    "Repeated empty-room AC usage",
+    "Standby and left-on socket loads",
+    "Electricity tariff: 0.032 BHD/kWh",
+    "Residents follow all displayed recommendations"
+  ],
+  "savings_categories": [
+    {
+      "title": "Empty-room AC recommendation",
+      "detail": "KahrabaIQ detects extended AC operation while the room is unoccupied and recommends switching it off.",
+      "saved_kwh": 70.0
+    },
+    {
+      "title": "Socket/device left-on recommendation",
+      "detail": "KahrabaIQ identifies devices consuming power during low-occupancy periods.",
+      "saved_kwh": 18.0
+    },
+    {
+      "title": "Cooling temperature optimization",
+      "detail": "KahrabaIQ recommends more efficient AC temperature settings based on room conditions.",
+      "saved_kwh": 17.0
+    },
+    {
+      "title": "Usage routine optimization",
+      "detail": "KahrabaIQ identifies repeated unnecessary appliance operation and recommends improved routines.",
+      "saved_kwh": 15.0
+    }
+  ],
+  "days": [
+    {"day": 1, "baseline_kwh": 18.2, "assisted_kwh": 14.7},
+    {"day": 2, "baseline_kwh": 18.9, "assisted_kwh": 15.1},
+    {"day": 3, "baseline_kwh": 20.4, "assisted_kwh": 16.2},
+    {"day": 4, "baseline_kwh": 20.7, "assisted_kwh": 16.6},
+    {"day": 5, "baseline_kwh": 22.0, "assisted_kwh": 17.3},
+    {"day": 6, "baseline_kwh": 21.3, "assisted_kwh": 17.0},
+    {"day": 7, "baseline_kwh": 19.1, "assisted_kwh": 15.3},
+    {"day": 8, "baseline_kwh": 18.4, "assisted_kwh": 14.8},
+    {"day": 9, "baseline_kwh": 19.7, "assisted_kwh": 15.7},
+    {"day": 10, "baseline_kwh": 20.2, "assisted_kwh": 16.1},
+    {"day": 11, "baseline_kwh": 19.4, "assisted_kwh": 15.6},
+    {"day": 12, "baseline_kwh": 21.0, "assisted_kwh": 16.7},
+    {"day": 13, "baseline_kwh": 21.7, "assisted_kwh": 17.2},
+    {"day": 14, "baseline_kwh": 19.9, "assisted_kwh": 15.9},
+    {"day": 15, "baseline_kwh": 18.1, "assisted_kwh": 14.7},
+    {"day": 16, "baseline_kwh": 19.3, "assisted_kwh": 15.4},
+    {"day": 17, "baseline_kwh": 20.5, "assisted_kwh": 16.3},
+    {"day": 18, "baseline_kwh": 21.2, "assisted_kwh": 16.9},
+    {"day": 19, "baseline_kwh": 22.3, "assisted_kwh": 17.7},
+    {"day": 20, "baseline_kwh": 20.4, "assisted_kwh": 16.2},
+    {"day": 21, "baseline_kwh": 18.8, "assisted_kwh": 15.0},
+    {"day": 22, "baseline_kwh": 18.3, "assisted_kwh": 15.1},
+    {"day": 23, "baseline_kwh": 20.0, "assisted_kwh": 15.9},
+    {"day": 24, "baseline_kwh": 20.8, "assisted_kwh": 16.5},
+    {"day": 25, "baseline_kwh": 19.5, "assisted_kwh": 15.5},
+    {"day": 26, "baseline_kwh": 20.1, "assisted_kwh": 16.0},
+    {"day": 27, "baseline_kwh": 21.6, "assisted_kwh": 17.1},
+    {"day": 28, "baseline_kwh": 21.1, "assisted_kwh": 16.8},
+    {"day": 29, "baseline_kwh": 18.5, "assisted_kwh": 15.2},
+    {"day": 30, "baseline_kwh": 18.6, "assisted_kwh": 15.5}
+  ]
+}
