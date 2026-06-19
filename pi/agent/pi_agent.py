@@ -696,8 +696,6 @@ def cloud_monthly_usage_payload() -> dict[str, Any]:
 
 def monthly_usage_payload(home_id: str, energy: dict[str, Any], cloud_dashboard: dict[str, Any]) -> dict[str, Any]:
     local_monthly = local_monthly_usage_payload(home_id, energy, cloud_dashboard)
-    if local_monthly.get("available"):
-        return local_monthly
 
     try:
         cloud_monthly = cloud_monthly_usage_payload()
@@ -707,6 +705,9 @@ def monthly_usage_payload(home_id: str, energy: dict[str, Any], cloud_dashboard:
         local_monthly["cloud_message"] = cloud_monthly.get("message")
     except Exception as error:
         local_monthly["cloud_message"] = f"Cannot fetch monthly usage from the cloud database: {error}"
+
+    if local_monthly.get("available"):
+        return local_monthly
 
     monthly = as_dict(first_present(cloud_dashboard.get("monthly_usage"), cloud_dashboard.get("monthlyUsage")))
     source = "cloud" if monthly else "local"
