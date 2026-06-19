@@ -2591,6 +2591,21 @@ def kiosk_dashboard(actor: AuthContext = Depends(require_kiosk_session)) -> dict
     return {"success": True, "pi_id": pi_id, "home_id": home_id, "paired": True, "dashboard": latest}
 
 
+@app.get("/api/kiosk/energy/budget")
+def kiosk_energy_budget(actor: AuthContext = Depends(require_kiosk_session)) -> dict[str, Any]:
+    pi_id, home_id = kiosk_pi_and_home(actor)
+    if not home_id:
+        return {
+            "success": True,
+            "pi_id": pi_id,
+            "home_id": None,
+            "paired": False,
+            "month_data_available": False,
+            "reason_if_unavailable": "Kiosk is not paired to a home.",
+        }
+    return {**build_energy_budget_response(home_id), "pi_id": pi_id, "paired": True}
+
+
 @app.post("/api/kiosk/commands")
 def kiosk_create_command(
     request: KioskCommandCreateRequest,

@@ -29,7 +29,7 @@
 const bool DIRECT_WIFI_MODE = true;
 const char* MANUAL_WIFI_SSID = "Nassernxs";
 const char* MANUAL_WIFI_PASSWORD = "nasser04";
-const char* MANUAL_PI_IP = "10.41.1.94";
+const char* MANUAL_PI_IP = "172.23.236.173";
 const int MANUAL_PI_PORT = 5000;
 const char* MANUAL_PI_SENSOR_URL = "";
   const char* MANUAL_HOME_ID = "home_001";

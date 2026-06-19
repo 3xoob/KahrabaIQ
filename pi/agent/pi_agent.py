@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import hashlib
 import hmac
 import secrets
@@ -16,8 +17,8 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-from local_state_store import get_path, home_snapshot, set_path
-from timestamp_utils import ms_to_iso
+from local_state_store import get_path, history_between, home_snapshot, set_path, summaries_between
+from timestamp_utils import BAHRAIN_TZ, ms_to_iso
 try:
     from local_command_controller import (
         execute_local_command,
@@ -83,6 +84,11 @@ _agent_state: dict[str, Any] = {
     "last_command_poll_at_ms": None,
 }
 _admin_sessions: dict[str, int] = {}
+_cloud_dashboard_cache: dict[str, Any] = {
+    "fetched_at_ms": 0,
+    "data": None,
+    "error": None,
+}
 
 
 @app.after_request
@@ -397,31 +403,399 @@ def kiosk_dashboard_data() -> dict[str, Any]:
     return data
 
 
+def as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def object_list(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        return [item for item in value.values() if isinstance(item, dict)]
+    return []
+
+
+def as_number(value: Any, fallback: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return fallback
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return fallback
+    return fallback
+
+
+def number_or_none(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def summary_energy_value(summary: dict[str, Any]) -> float | None:
+    energy = as_dict(summary.get("energy"))
+    for value in (
+        energy.get("total_estimated_energy_kWh"),
+        energy.get("total_energy_kWh"),
+        energy.get("total_energy_kwh"),
+        summary.get("total_estimated_energy_kWh"),
+        summary.get("total_energy_kWh"),
+        summary.get("total_energy_kwh"),
+        summary.get("totalEnergyKwh"),
+    ):
+        parsed = number_or_none(value)
+        if parsed is not None:
+            return max(0.0, parsed)
+
+    total = 0.0
+    found = False
+    for breaker in as_dict(summary.get("breakerSummaries")).values():
+        if not isinstance(breaker, dict):
+            continue
+        parsed = number_or_none(
+            first_present(
+                breaker.get("energyDeltaKwh"),
+                breaker.get("energy_delta_kwh"),
+                breaker.get("energy_kWh"),
+                breaker.get("energy_kwh"),
+            )
+        )
+        if parsed is not None:
+            total += max(0.0, parsed)
+            found = True
+    return round(total, 6) if found else None
+
+
+def energy_from_breaker_history(start_ms: int, end_ms: int) -> tuple[float | None, int, str]:
+    total_kwh = 0.0
+    record_count = 0
+    used_sources: list[str] = []
+    for breaker_id in ("breaker_01", "breaker_02"):
+        records = history_between(breaker_id, start_ms, end_ms)
+        record_count += len(records)
+        samples: list[tuple[int, float, float]] = []
+        for record in records:
+            timestamp = number_or_none(
+                first_present(record.get("timestamp_ms"), record.get("created_at_ms"), record.get("updated_at_ms"))
+            )
+            if timestamp is None:
+                continue
+            power_w = number_or_none(record.get("power_W"))
+            energy_kwh = number_or_none(record.get("energy_kWh"))
+            samples.append((int(timestamp), max(0.0, power_w or 0.0), max(0.0, energy_kwh or 0.0)))
+
+        samples.sort(key=lambda item: item[0])
+        energy_values = [sample[2] for sample in samples if sample[2] > 0]
+        if len(energy_values) >= 2 and energy_values[-1] >= energy_values[0]:
+            total_kwh += energy_values[-1] - energy_values[0]
+            used_sources.append(f"{breaker_id}:meter")
+            continue
+
+        integrated = 0.0
+        for (left_ms, left_power, _), (right_ms, right_power, _) in zip(samples, samples[1:]):
+            elapsed_ms = right_ms - left_ms
+            if elapsed_ms <= 0 or elapsed_ms > 300000:
+                continue
+            integrated += ((left_power + right_power) / 2) * (elapsed_ms / 3600000) / 1000
+        if integrated > 0:
+            total_kwh += integrated
+            used_sources.append(f"{breaker_id}:power_integration")
+
+    if total_kwh <= 0:
+        return None, record_count, ""
+    return round(total_kwh, 6), record_count, ",".join(used_sources)
+
+
+def local_monthly_usage_payload(home_id: str, energy: dict[str, Any], cloud_dashboard: dict[str, Any]) -> dict[str, Any]:
+    now_dt = datetime.now(BAHRAIN_TZ)
+    month_start = datetime(now_dt.year, now_dt.month, 1, tzinfo=BAHRAIN_TZ)
+    start_ms = int(month_start.timestamp() * 1000)
+    end_ms = now_ms()
+    home = home_snapshot(home_id)
+    settings = as_dict(first_present(get_path(f"homes/{home_id}/settings", {}), cloud_dashboard.get("settings")))
+    dashboard_energy = as_dict(as_dict(home.get("dashboard")).get("energy"))
+    tariff = number_or_none(
+        first_present(
+            settings.get("cost_per_kwh"),
+            energy.get("tariff_BHD_per_kWh"),
+            energy.get("tariff"),
+            dashboard_energy.get("tariff_BHD_per_kWh"),
+            dashboard_energy.get("tariff"),
+            home.get("tariff_bhd_per_kwh"),
+        )
+    )
+    if tariff is None:
+        tariff = 0.029
+
+    candidates: list[tuple[str, list[dict[str, Any]]]] = [
+        ("local_daily_summary", summaries_between("daily", start_ms, end_ms)),
+        ("local_hourly_summary", summaries_between("hourly", start_ms, end_ms)),
+        ("local_monthly_summary", summaries_between("monthly", start_ms, end_ms)),
+    ]
+    zero_fallback: dict[str, Any] | None = None
+    for source, summaries in candidates:
+        values = [value for summary in summaries if (value := summary_energy_value(summary)) is not None]
+        if not values:
+            continue
+        usage_kwh = round(sum(values), 6)
+        payload = {
+            "available": True,
+            "source": source,
+            "message": None,
+            "usage_kwh": usage_kwh,
+            "cost_bhd": round(usage_kwh * tariff, 6),
+            "tariff_bhd_per_kwh": tariff,
+            "month_start_ms": start_ms,
+            "month_start_iso": ms_to_iso(start_ms),
+            "month_end_ms": end_ms,
+            "month_end_iso": ms_to_iso(end_ms),
+            "summary_count": len(summaries),
+            "energy_value_count": len(values),
+            "updated_at_ms": end_ms,
+        }
+        if usage_kwh > 0:
+            return payload
+        if zero_fallback is None:
+            zero_fallback = payload
+
+    history_kwh, history_count, history_source = energy_from_breaker_history(start_ms, end_ms)
+    if history_kwh is not None:
+        return {
+            "available": True,
+            "source": "local_breaker_history",
+            "message": None,
+            "usage_kwh": history_kwh,
+            "cost_bhd": round(history_kwh * tariff, 6),
+            "tariff_bhd_per_kwh": tariff,
+            "month_start_ms": start_ms,
+            "month_start_iso": ms_to_iso(start_ms),
+            "month_end_ms": end_ms,
+            "month_end_iso": ms_to_iso(end_ms),
+            "summary_count": sum(len(summaries) for _, summaries in candidates),
+            "history_record_count": history_count,
+            "history_source": history_source,
+            "updated_at_ms": end_ms,
+        }
+
+    if zero_fallback is not None:
+        zero_fallback["history_record_count"] = history_count
+        return zero_fallback
+
+    summary_count = sum(len(summaries) for _, summaries in candidates)
+    return {
+        "available": False,
+        "source": "local_database",
+        "message": (
+            "No current-month local energy summaries were found yet."
+            if summary_count == 0
+            else "Current-month local summaries exist but do not contain usable energy totals."
+        ),
+        "usage_kwh": None,
+        "cost_bhd": None,
+        "tariff_bhd_per_kwh": tariff,
+        "month_start_ms": start_ms,
+        "month_start_iso": ms_to_iso(start_ms),
+        "month_end_ms": end_ms,
+        "month_end_iso": ms_to_iso(end_ms),
+        "summary_count": summary_count,
+        "history_record_count": history_count,
+    }
+
+
+def cached_cloud_dashboard_data() -> dict[str, Any]:
+    now = now_ms()
+    with _state_lock:
+        cached_at = int(_cloud_dashboard_cache.get("fetched_at_ms") or 0)
+        if cached_at and now - cached_at < 60000:
+            data = _cloud_dashboard_cache.get("data")
+            error = _cloud_dashboard_cache.get("error")
+            return {
+                "available": isinstance(data, dict),
+                "dashboard": as_dict(as_dict(data).get("dashboard")),
+                "message": error,
+                "fetched_at_ms": cached_at,
+            }
+    try:
+        data = kiosk_dashboard_data()
+        with _state_lock:
+            _cloud_dashboard_cache.update({"fetched_at_ms": now, "data": data, "error": None})
+        return {
+            "available": True,
+            "dashboard": as_dict(data.get("dashboard")),
+            "message": None,
+            "fetched_at_ms": now,
+        }
+    except Exception as error:
+        message = f"Cannot fetch cloud dashboard data: {error}"
+        with _state_lock:
+            _cloud_dashboard_cache.update({"fetched_at_ms": now, "data": None, "error": message})
+        return {"available": False, "dashboard": {}, "message": message, "fetched_at_ms": now}
+
+
+def cloud_monthly_usage_payload() -> dict[str, Any]:
+    session = refresh_kiosk_token()
+    token = session.get("kiosk_token")
+    if not token:
+        raise RuntimeError("Kiosk token is unavailable.")
+    response = api_request(
+        "GET",
+        "/api/kiosk/energy/budget",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    data = response.json()
+    if not response.ok or data.get("success") is False:
+        raise RuntimeError(data.get("detail") or data.get("message") or response.text)
+
+    usage_kwh = first_present(
+        data.get("current_month_energy_kwh"),
+        data.get("month_kwh"),
+        data.get("current_month_kwh"),
+    )
+    cost_bhd = first_present(
+        data.get("current_month_cost_bhd"),
+        data.get("month_cost_bhd"),
+        data.get("current_month_cost"),
+    )
+    available = data.get("month_data_available") is not False and (usage_kwh is not None or cost_bhd is not None)
+    if not available:
+        return {
+            "available": False,
+            "source": "cloud_database",
+            "message": data.get("reason_if_unavailable") or "Cloud monthly usage is not available yet.",
+            "usage_kwh": None,
+            "cost_bhd": None,
+        }
+    return {
+        "available": True,
+        "source": data.get("month_source") or "cloud_database",
+        "message": None,
+        "usage_kwh": round(as_number(usage_kwh), 6),
+        "cost_bhd": round(as_number(cost_bhd), 6),
+        "budget_bhd": data.get("monthly_budget_bhd"),
+        "percentage_used": data.get("percentage_used"),
+        "days_remaining": data.get("days_remaining"),
+        "updated_at_ms": now_ms(),
+    }
+
+
+def monthly_usage_payload(home_id: str, energy: dict[str, Any], cloud_dashboard: dict[str, Any]) -> dict[str, Any]:
+    local_monthly = local_monthly_usage_payload(home_id, energy, cloud_dashboard)
+    if local_monthly.get("available"):
+        return local_monthly
+
+    try:
+        cloud_monthly = cloud_monthly_usage_payload()
+        if cloud_monthly.get("available"):
+            return cloud_monthly
+        local_monthly["message"] = cloud_monthly.get("message") or local_monthly.get("message")
+        local_monthly["cloud_message"] = cloud_monthly.get("message")
+    except Exception as error:
+        local_monthly["cloud_message"] = f"Cannot fetch monthly usage from the cloud database: {error}"
+
+    monthly = as_dict(first_present(cloud_dashboard.get("monthly_usage"), cloud_dashboard.get("monthlyUsage")))
+    source = "cloud" if monthly else "local"
+    month_kwh = first_present(
+        monthly.get("usage_kwh"),
+        monthly.get("energy_kwh"),
+        monthly.get("month_kwh"),
+        energy.get("month_kwh"),
+        energy.get("monthlyEnergyKwh"),
+        energy.get("monthEnergyKwh"),
+    )
+    month_cost = first_present(
+        monthly.get("cost_bhd"),
+        monthly.get("month_cost_bhd"),
+        monthly.get("cost"),
+        energy.get("month_cost_bhd"),
+        energy.get("monthlyCostBhd"),
+        energy.get("monthCost"),
+    )
+    if month_kwh is None and month_cost is None:
+        return local_monthly
+    return {
+        "available": True,
+        "source": source,
+        "message": None,
+        "usage_kwh": round(as_number(month_kwh), 6),
+        "cost_bhd": round(as_number(month_cost), 6),
+        "updated_at_ms": first_present(monthly.get("updated_at_ms"), energy.get("updated_at_ms"), energy.get("timestampMs")),
+    }
+
+
+def recommendations_from_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    recommendations = []
+    for item in items:
+        category = str(item.get("category") or item.get("type") or "").lower()
+        if category == "recommendation" or item.get("recommendation_type") or item.get("recommendation"):
+            recommendations.append(item)
+    return recommendations
+
+
 def local_dashboard_payload() -> dict[str, Any]:
     live = build_live_state()
+    cloud = cached_cloud_dashboard_data()
+    cloud_dashboard = as_dict(cloud.get("dashboard"))
+    cloud_available = bool(cloud.get("available"))
     dashboard = live.get("dashboard") if isinstance(live.get("dashboard"), dict) else {}
     energy = live.get("energy") if isinstance(live.get("energy"), dict) else {}
+    cloud_energy = as_dict(cloud_dashboard.get("energy"))
+    if cloud_energy:
+        energy = {**energy, **cloud_energy}
     room = live.get("room") if isinstance(live.get("room"), dict) else {}
     devices = live.get("devices") if isinstance(live.get("devices"), dict) else {}
-    alerts = live.get("alerts") if isinstance(live.get("alerts"), list) else []
-    notifications = live.get("notifications") if isinstance(live.get("notifications"), list) else []
+    alerts = object_list(first_present(cloud_dashboard.get("alerts"), live.get("alerts")))
+    notifications = object_list(first_present(cloud_dashboard.get("notifications"), live.get("notifications")))
+    ai_notifications = object_list(
+        first_present(
+            cloud_dashboard.get("ai_notifications"),
+            cloud_dashboard.get("recommendations"),
+            dashboard.get("ai_notifications"),
+        )
+    )
+    ai = as_dict(first_present(cloud_dashboard.get("ai"), dashboard.get("ai")))
     occupancy = live.get("occupancy") if isinstance(live.get("occupancy"), dict) else {}
     safety = live.get("safety") if isinstance(live.get("safety"), dict) else {}
     timestamp_ms = int(live.get("updated_at_ms") or live.get("timestamp_ms") or now_ms())
+    home_id = str(live.get("home_id") or HOME_ID or "home_001")
+    monthly = monthly_usage_payload(home_id, energy, cloud_dashboard)
     return {
         "success": True,
         "source": "raspberry_pi_local_state",
+        "cloud": {
+            "available": cloud_available,
+            "message": cloud.get("message"),
+            "fetched_at_ms": cloud.get("fetched_at_ms"),
+        },
         "pi_id": PI_ID,
-        "home_id": live.get("home_id") or HOME_ID or "home_001",
+        "home_id": home_id,
         "paired": bool(HOME_ID or live.get("home_id")),
         "dashboard": {
             **dashboard,
             "energy": energy,
+            "monthly_usage": monthly,
             "room": room,
             "devices": devices,
             "alerts": alerts,
             "notifications": notifications,
-            "ai_notifications": dashboard.get("ai_notifications", []),
+            "ai_notifications": ai_notifications,
+            "recommendations": recommendations_from_items(ai_notifications),
+            "ai": ai,
             "occupancy": occupancy,
             "safety": safety,
             "updated_at_ms": timestamp_ms,
@@ -852,6 +1226,7 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
 
     .hero { grid-column: span 7; }
     .room { grid-column: span 5; }
+    .monthly { grid-column: span 12; }
     .sensors { grid-column: span 6; }
     .notes { grid-column: span 6; }
     .wide { grid-column: span 12; }
@@ -1047,6 +1422,12 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       padding: 12px 14px;
     }
 
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 12px;
+    }
+
     .overlay {
       position: fixed;
       inset: 0;
@@ -1210,7 +1591,7 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       header { align-items: flex-start; flex-direction: column; }
       .brand { align-items: flex-start; flex-direction: column; gap: 12px; }
       .brand-mark { width: 132px; }
-      .hero, .room, .sensors, .notes { grid-column: span 12; }
+      .hero, .room, .monthly, .sensors, .notes { grid-column: span 12; }
       .invite-card { grid-template-columns: 1fr; }
       .invite-qr { width: min(240px, 100%); margin: 0 auto; }
       .metric-row { grid-template-columns: 1fr; }
@@ -1312,6 +1693,27 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
         </div>
       </article>
 
+      <article class="card monthly">
+        <div class="section-head">
+          <div class="section-title">Monthly Usage</div>
+          <div class="muted" id="monthlySource">Waiting for cloud data</div>
+        </div>
+        <div class="metric-row">
+          <div class="metric">
+            <div class="label">Usage</div>
+            <div class="small-value" id="monthlyUsage">-- kWh</div>
+          </div>
+          <div class="metric">
+            <div class="label">Cost</div>
+            <div class="small-value" id="monthlyCost">-- BD</div>
+          </div>
+          <div class="metric">
+            <div class="label">Status</div>
+            <div class="small-value" id="monthlyStatus">Waiting</div>
+          </div>
+        </div>
+      </article>
+
       <article class="card wide">
         <div class="section-head">
           <div class="section-title">Breakers & Controls</div>
@@ -1359,6 +1761,14 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
           <div class="muted">Active items only</div>
         </div>
         <div id="alerts">No active alerts.</div>
+      </article>
+
+      <article class="card notes">
+        <div class="section-head">
+          <div class="section-title">Recommendations</div>
+          <div class="muted" id="recommendationSource">Cloud AI</div>
+        </div>
+        <div id="recommendations">Waiting for recommendations.</div>
       </article>
 
       <article class="card invite-card">
@@ -1421,6 +1831,30 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       return `${fmt.format(parsed)} kWh`;
     }
 
+    function costText(value) {
+      if (value === null || value === undefined || value === "") return "-- BD";
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed)) return String(value);
+      return `${parsed.toFixed(3)} BD`;
+    }
+
+    function itemText(item) {
+      return item.title || item.message || item.body || item.recommendation || item.explanation || "Item available.";
+    }
+
+    function renderItems(nodeId, items, emptyText, unavailableText = "") {
+      const node = document.getElementById(nodeId);
+      if (!items || !items.length) {
+        node.innerHTML = unavailableText ? `<div class="notes-list"><div class="note"><span class="warn">${unavailableText}</span></div></div>` : emptyText;
+        return;
+      }
+      node.innerHTML = `<div class="notes-list">${items.map((item) => {
+        const severity = String(item.severity || item.level || "info").toLowerCase();
+        const klass = severity === "critical" || severity === "high" ? "error" : severity === "medium" ? "warn" : "";
+        return `<div class="note"><span class="${klass}">${itemText(item)}</span></div>`;
+      }).join("")}</div>`;
+    }
+
     function currentSensorValue(online, value, suffix = "") {
       return online ? valueOrDash(value, suffix) : "Unavailable";
     }
@@ -1461,7 +1895,9 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
 
     function render(data) {
       const dashboard = data.dashboard || {};
+      const cloud = data.cloud || {};
       const energy = dashboard.energy || {};
+      const monthly = dashboard.monthly_usage || {};
       const room = dashboard.room || {};
       const devices = dashboard.devices || {};
       const sensorHub = sensorDevice(devices);
@@ -1482,8 +1918,12 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       text("energyTimestamp", timestampText(energy.timestampMs || energy.timestamp_ms || dashboard.updated_at_ms));
       text("power", fmt.format(number(energy.currentPowerW ?? energy.powerW)));
       text("energyToday", energyText(energy.energyTodayKwh ?? energy.totalEnergyKwh));
-      text("costToday", `${number(energy.costToday).toFixed(3)} BD`);
+      text("costToday", costText(energy.costToday));
       text("breakerCount", `${activeBreakers}/${breakers.length || 0}`);
+      text("monthlyUsage", monthly.available ? energyText(monthly.usage_kwh) : "-- kWh");
+      text("monthlyCost", monthly.available ? costText(monthly.cost_bhd) : "-- BD");
+      text("monthlyStatus", monthly.available ? "Available" : "Unavailable");
+      text("monthlySource", monthly.available ? `Source: ${monthly.source || "cloud"}` : (monthly.message || cloud.message || "Cannot fetch monthly usage."));
       text("roomStatus", sensorOnline ? "Online" : room.stale ? "Stale" : "Offline");
       document.getElementById("roomStatus").className = `state ${sensorOnline ? "" : room.stale ? "stale" : "offline"}`;
       text("temperature", currentSensorValue(sensorOnline, firstPresent(sensorPayload.temperature, room.temperature), " C"));
@@ -1544,7 +1984,12 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       }
 
       const alerts = dashboard.alerts || [];
+      const notifications = dashboard.notifications || [];
       const aiNotifications = dashboard.ai_notifications || [];
+      const recommendations = dashboard.recommendations || aiNotifications.filter((item) => {
+        const category = String(item.category || item.type || "").toLowerCase();
+        return category === "recommendation" || item.recommendation_type || item.recommendation;
+      });
       const ai = dashboard.ai || {};
       const notes = [];
       if (ai.ai_status_summary || ai.summary) {
@@ -1553,18 +1998,20 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       if (room.stale || room.online === false) {
         notes.push('<span class="warn">Room sensors are offline or stale.</span>');
       }
-      for (const alert of alerts) {
-        notes.push(`<span class="error">${alert.title || alert.message || "Active alert"}</span>`);
+      for (const notification of notifications.slice(0, 3)) {
+        notes.push(`<span class="warn">${itemText(notification)}</span>`);
       }
-      for (const notification of aiNotifications.filter((item) => {
-        const severity = String(item.severity || "info").toLowerCase();
-        return severity === "critical" || severity === "high";
-      }).slice(0, 3)) {
-        const severity = String(notification.severity || "info").toLowerCase();
-        const klass = severity === "critical" || severity === "high" ? "error" : "warn";
-        notes.push(`<span class="${klass}">AI: ${notification.title || notification.message || "Notification"}</span>`);
-      }
-      document.getElementById("alerts").innerHTML = notes.length ? `<div class="notes-list">${notes.map((note) => `<div class="note">${note}</div>`).join("")}</div>` : "No active alerts.";
+      const cloudProblem = cloud.available === false ? (cloud.message || "Cannot fetch cloud alerts, notes, or recommendations.") : "";
+      const alertsUnavailable = cloud.available === false && !alerts.length ? "Cannot fetch alerts from the cloud." : "";
+      const recommendationsUnavailable = cloud.available === false && !recommendations.length ? "Cannot fetch recommendations from the cloud." : "";
+      const noteList = [
+        ...(cloudProblem ? [{ message: cloudProblem, severity: "medium" }] : []),
+        ...alerts.map((alert) => ({ ...alert, severity: alert.severity || "high" })),
+        ...notes.map((note) => ({ message: note })),
+      ];
+      renderItems("alerts", noteList, "No active alerts or notes.", alertsUnavailable || cloudProblem);
+      renderItems("recommendations", recommendations, "No recommendations available.", recommendationsUnavailable);
+      text("recommendationSource", recommendations.length ? "Cloud AI" : "Unavailable");
 
       const overlay = document.getElementById("alertOverlay");
       const overlayMessage = document.getElementById("alertOverlayMessage");
@@ -1747,8 +2194,27 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       adminLog(await adminFetch("/api/admin/maintenance/start", { method: "POST" }));
     };
 
+    function connectDashboardStream() {
+      if (!window.EventSource) {
+        refresh();
+        setInterval(refresh, 2000);
+        return;
+      }
+      const stream = new EventSource("/api/kiosk/dashboard-stream");
+      stream.onmessage = (event) => {
+        try {
+          render(JSON.parse(event.data));
+        } catch (error) {
+          text("statusText", "Stream error");
+        }
+      };
+      stream.onerror = () => {
+        text("statusText", "Reconnecting");
+      };
+    }
+
     refresh();
-    setInterval(refresh, 5000);
+    connectDashboardStream();
   </script>
 </body>
 </html>
@@ -1957,6 +2423,29 @@ def local_kiosk_dashboard_data() -> Any:
         return jsonify(local_dashboard_payload())
     except Exception as error:
         return jsonify({"success": False, "message": str(error)}), 503
+
+
+def dashboard_stream() -> Any:
+    while True:
+        try:
+            payload = local_dashboard_payload()
+            yield f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+        except Exception as error:
+            payload = {"success": False, "message": str(error), "updated_at_ms": now_ms()}
+            yield f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+        time.sleep(1)
+
+
+@app.get("/api/kiosk/dashboard-stream")
+def local_kiosk_dashboard_stream() -> Response:
+    return Response(
+        dashboard_stream(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/kiosk/home-invite-qr")
