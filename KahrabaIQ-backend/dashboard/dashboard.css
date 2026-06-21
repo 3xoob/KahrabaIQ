@@ -16,7 +16,34 @@
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html { background: var(--bg); }
+html {
+  background: var(--bg);
+  scrollbar-color: rgba(255, 85, 85, 0.72) rgba(5, 5, 5, 0.78);
+  scrollbar-width: thin;
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: linear-gradient(180deg, rgba(5, 5, 5, 0.96), rgba(16, 16, 16, 0.92));
+  border-left: 1px solid rgba(255, 255, 255, 0.055);
+}
+
+::-webkit-scrollbar-thumb {
+  background:
+    linear-gradient(180deg, rgba(255, 85, 85, 0.92), rgba(255, 45, 45, 0.56));
+  border: 3px solid rgba(8, 8, 8, 0.96);
+  border-radius: 999px;
+  box-shadow: 0 0 18px rgba(255, 45, 45, 0.22);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background:
+    linear-gradient(180deg, rgba(255, 112, 112, 0.98), rgba(255, 45, 45, 0.72));
+}
 
 body {
   margin: 0;
@@ -109,7 +136,7 @@ h1 { margin: 0; font-family: Orbitron, Sora, Inter, sans-serif; font-size: 24px;
 .device-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
 .device-name { font-size: 20px; font-weight: 900; }
 .state { padding: 6px 10px; border-radius: 999px; background: rgba(18, 196, 139, 0.14); color: var(--green); font-weight: 800; text-transform: capitalize; }
-.state.offline, .state.failed { background: rgba(255, 92, 122, 0.14); color: var(--red); }
+.state.offline, .state.off, .state.failed { background: rgba(255, 92, 122, 0.14); color: var(--red); }
 .state.stale { background: rgba(255, 176, 32, 0.14); color: var(--yellow); }
 .command-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .command-actions button { border: 1px solid rgba(255, 45, 45, 0.28); border-radius: 999px; min-height: 40px; padding: 0 16px; background: rgba(255, 45, 45, 0.1); color: var(--text); font-weight: 900; }
