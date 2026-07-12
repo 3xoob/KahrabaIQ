@@ -225,6 +225,168 @@ class HomeSettings {
   }
 }
 
+class EnergyHistoryPoint {
+  const EnergyHistoryPoint({
+    required this.timestamp,
+    required this.label,
+    required this.kwh,
+    required this.costBhd,
+    required this.powerW,
+  });
+
+  final DateTime timestamp;
+  final String label;
+  final double kwh;
+  final double costBhd;
+  final double powerW;
+}
+
+class BreakerContribution {
+  const BreakerContribution({
+    required this.breakerId,
+    required this.name,
+    required this.branch,
+    required this.energyKwh,
+    required this.costBhd,
+    required this.percentage,
+  });
+
+  final String breakerId;
+  final String name;
+  final String branch;
+  final double energyKwh;
+  final double costBhd;
+  final double percentage;
+}
+
+class EnergyHistoryData {
+  const EnergyHistoryData({
+    required this.powerHistory,
+    required this.hourlyUsage,
+    required this.dailyEnergy,
+    required this.monthlyEnergy,
+    required this.costHistory,
+    required this.breakerContribution,
+    required this.peakUsageHours,
+    required this.homeLearningProfile,
+  });
+
+  final List<EnergyHistoryPoint> powerHistory;
+  final List<EnergyHistoryPoint> hourlyUsage;
+  final List<EnergyHistoryPoint> dailyEnergy;
+  final List<EnergyHistoryPoint> monthlyEnergy;
+  final List<EnergyHistoryPoint> costHistory;
+  final List<BreakerContribution> breakerContribution;
+  final List<EnergyHistoryPoint> peakUsageHours;
+  final HomeLearningProfile homeLearningProfile;
+}
+
+class HomeLearningProfile {
+  const HomeLearningProfile({
+    required this.status,
+    required this.adaptiveReadiness,
+    required this.averageDailyKwh,
+    required this.averageDailyCostBhd,
+    required this.expectedMonthlyKwh,
+    required this.expectedMonthlyCostBhd,
+    required this.hourlySummaryCount,
+    required this.dailySummaryCount,
+    required this.trainedAt,
+    required this.profileVersion,
+  });
+
+  final String status;
+  final double adaptiveReadiness;
+  final double averageDailyKwh;
+  final double averageDailyCostBhd;
+  final double expectedMonthlyKwh;
+  final double expectedMonthlyCostBhd;
+  final int hourlySummaryCount;
+  final int dailySummaryCount;
+  final DateTime? trainedAt;
+  final String profileVersion;
+}
+
+class EstimatedSavings {
+  const EstimatedSavings({
+    required this.estimatedSavedKwh,
+    required this.estimatedSavedBhd,
+    required this.baselineKwhToDate,
+    required this.baselineCostToDateBhd,
+    required this.baselineDailyKwh,
+    required this.baselineDailyCostBhd,
+    required this.confidence,
+    required this.method,
+    required this.note,
+  });
+
+  final double estimatedSavedKwh;
+  final double estimatedSavedBhd;
+  final double baselineKwhToDate;
+  final double baselineCostToDateBhd;
+  final double baselineDailyKwh;
+  final double baselineDailyCostBhd;
+  final double confidence;
+  final String method;
+  final String note;
+}
+
+class DailyBudgetProgress {
+  const DailyBudgetProgress({
+    required this.timestamp,
+    required this.label,
+    required this.actualCostBhd,
+    required this.recommendedCostBhd,
+    required this.overRecommended,
+  });
+
+  final DateTime timestamp;
+  final String label;
+  final double actualCostBhd;
+  final double recommendedCostBhd;
+  final bool overRecommended;
+}
+
+class EnergyBudgetData {
+  const EnergyBudgetData({
+    required this.monthlyBudgetBhd,
+    required this.currentMonthCostBhd,
+    required this.currentMonthEnergyKwh,
+    required this.remainingBudgetBhd,
+    required this.percentageUsed,
+    required this.daysRemaining,
+    required this.averageDailyCostBhd,
+    required this.recommendedDailyLimitBhd,
+    required this.predictedMonthlyCostBhd,
+    required this.predictedDifferenceBhd,
+    required this.status,
+    required this.dailyProgress,
+    required this.breakerContribution,
+    required this.estimatedSavings,
+    required this.homeLearningProfile,
+    required this.monthDataAvailable,
+    required this.reasonIfUnavailable,
+  });
+
+  final double monthlyBudgetBhd;
+  final double currentMonthCostBhd;
+  final double currentMonthEnergyKwh;
+  final double remainingBudgetBhd;
+  final double percentageUsed;
+  final int daysRemaining;
+  final double averageDailyCostBhd;
+  final double recommendedDailyLimitBhd;
+  final double predictedMonthlyCostBhd;
+  final double predictedDifferenceBhd;
+  final String status;
+  final List<DailyBudgetProgress> dailyProgress;
+  final List<BreakerContribution> breakerContribution;
+  final EstimatedSavings estimatedSavings;
+  final HomeLearningProfile homeLearningProfile;
+  final bool monthDataAvailable;
+  final String reasonIfUnavailable;
+}
+
 class ScheduleInfo {
   const ScheduleInfo({
     required this.id,
@@ -585,6 +747,10 @@ class KahrabaIqApiService {
         .toList();
 
     var parsedAi = _parseAiDashboard(aiResult);
+    final staleScenarioAi = _scenarioAiLooksStale(parsedAi);
+    if (staleScenarioAi && dashboard.aiDashboard != null) {
+      parsedAi = dashboard.aiDashboard;
+    }
     if (parsedAi != null &&
         parsedAi.nextHourEnergyKwh <= 0 &&
         dashboard.reading.power > 0) {
@@ -631,6 +797,25 @@ class KahrabaIqApiService {
       },
       deviceControlEnabled: false,
     );
+  }
+
+  bool _scenarioAiLooksStale(AiDashboardSummary? ai) {
+    if (ai == null) {
+      return false;
+    }
+    final text = [
+      ai.statusCode,
+      ai.statusLabel,
+      ai.statusSummary,
+      ai.recommendationType,
+      ai.actionTitle,
+    ].join(' ').toLowerCase();
+    return text.contains('needs_fresh') ||
+        text.contains('waiting for fresh') ||
+        text.contains('check pi') ||
+        text.contains('check_sensor') ||
+        text.contains('check_connectivity') ||
+        text.contains('stale');
   }
 
   Future<Map<String, dynamic>> fetchAiLatest({required String homeId}) async {
@@ -787,7 +972,7 @@ class KahrabaIqApiService {
   }
 
   Stream<SensorData> watchLiveSensorData({required String homeId}) {
-    if (!NetworkConfig.useAwsIotLive || homeId != NetworkConfig.defaultHomeId) {
+    if (!NetworkConfig.useAwsIotLive) {
       return const Stream<SensorData>.empty();
     }
     return _watchAwsIotLivePayloads(homeId: homeId).map((data) {
@@ -800,7 +985,7 @@ class KahrabaIqApiService {
   }
 
   Stream<DashboardData> watchLiveDashboardData({required String homeId}) {
-    if (!NetworkConfig.useAwsIotLive || homeId != NetworkConfig.defaultHomeId) {
+    if (!NetworkConfig.useAwsIotLive) {
       return const Stream<DashboardData>.empty();
     }
     return _watchAwsIotLivePayloads(
@@ -1210,11 +1395,39 @@ class KahrabaIqApiService {
         : rawState;
     final name = _asString(_pick(data, ['name']), fallback: deviceId);
     final rawType = _asString(_pick(data, ['type']));
-    final online = _asBool(_pick(data, ['online']), fallback: false);
+    final rawPower = _asDouble(
+      _pick(data, ['powerW', 'power_w', 'power_W', 'currentPower']) ??
+          _pick(metering, ['power_W', 'power_w', 'power']),
+    );
+    final voltage = _asDouble(
+      _pick(data, ['voltageV', 'voltage_v', 'voltage_V', 'voltage']) ??
+          _pick(metering, ['voltage_V', 'voltage_v', 'voltage']),
+    );
+    final current = _asDouble(
+      _pick(data, ['currentA', 'current_a', 'current_A', 'current']) ??
+          _pick(metering, ['current_A', 'current_a', 'current']),
+    );
+    final energyToday = _asDouble(
+      _pick(data, [
+            'energyKwh',
+            'energy_kwh',
+            'energy_kWh',
+            'energyToday',
+            'today_kwh',
+          ]) ??
+          _pick(metering, ['energy_kWh', 'energy_kwh', 'energyToday']),
+    );
+    final inferredBreakerOnline =
+        deviceId.startsWith('breaker_') &&
+        (rawPower > 0 || voltage > 0 || current > 0);
+    final online = _asBool(
+      _pick(data, ['online']),
+      fallback: inferredBreakerOnline,
+    );
     final stale = _asBool(_pick(data, ['stale']));
     final localOnline = _asBool(
       _pick(data, ['localOnline', 'local_online']),
-      fallback: online,
+      fallback: inferredBreakerOnline || online,
     );
     final isOn =
         online &&
@@ -1229,12 +1442,7 @@ class KahrabaIqApiService {
       name: name,
       type: _parseApiDeviceType(deviceId, name, rawType),
       isOn: isOn,
-      currentPower: online
-          ? _asDouble(
-              _pick(data, ['powerW', 'power_w', 'power_W', 'currentPower']) ??
-                  _pick(metering, ['power_W', 'power_w', 'power']),
-            )
-          : 0,
+      currentPower: online ? rawPower : 0,
       branch: _asString(
         _pick(data, ['branch', 'zone']),
         fallback: _branchFromDeviceId(deviceId),
@@ -1252,24 +1460,9 @@ class KahrabaIqApiService {
         _pick(data, ['energySupported', 'energy_supported']),
         fallback: true,
       ),
-      voltage: _asDouble(
-        _pick(data, ['voltageV', 'voltage_v', 'voltage_V', 'voltage']) ??
-            _pick(metering, ['voltage_V', 'voltage_v', 'voltage']),
-      ),
-      current: _asDouble(
-        _pick(data, ['currentA', 'current_a', 'current_A', 'current']) ??
-            _pick(metering, ['current_A', 'current_a', 'current']),
-      ),
-      energyToday: _asDouble(
-        _pick(data, [
-              'energyKwh',
-              'energy_kwh',
-              'energy_kWh',
-              'energyToday',
-              'today_kwh',
-            ]) ??
-            _pick(metering, ['energy_kWh', 'energy_kwh', 'energyToday']),
-      ),
+      voltage: voltage,
+      current: current,
+      energyToday: energyToday,
       controlMethod: _asNullableString(
         _pick(data, ['controlMethod', 'control_method']),
       ),
@@ -1642,11 +1835,29 @@ class KahrabaIqApiService {
     final rawType = _asString(_pick(data, ['type']));
     final name = _asString(_pick(data, ['name']), fallback: deviceId);
     final lastCommand = _asMap(data['last_command']);
-    final online = _asBool(_pick(data, ['online']), fallback: false);
+    final rawPower = _asDouble(
+      _pick(data, ['power_w', 'currentPower', 'power_W', 'powerW']),
+    );
+    final voltage = _asDouble(
+      _pick(data, ['voltage_v', 'voltage_V', 'voltageV']),
+    );
+    final current = _asDouble(
+      _pick(data, ['current_a', 'current_A', 'currentA']),
+    );
+    final energyToday = _asDouble(
+      _pick(data, ['energy_kwh', 'energy_kWh', 'energyKwh', 'today_kwh']),
+    );
+    final inferredBreakerOnline =
+        deviceId.startsWith('breaker_') &&
+        (rawPower > 0 || voltage > 0 || current > 0);
+    final online = _asBool(
+      _pick(data, ['online']),
+      fallback: inferredBreakerOnline,
+    );
     final stale = _asBool(_pick(data, ['stale']));
     final localOnline = _asBool(
       _pick(data, ['local_online', 'localOnline']),
-      fallback: online,
+      fallback: inferredBreakerOnline || online,
     );
     final energySupported = _asBool(
       _pick(data, ['energy_supported', 'energySupported']),
@@ -1661,11 +1872,7 @@ class KahrabaIqApiService {
       name: name,
       type: _parseApiDeviceType(deviceId, name, rawType),
       isOn: visualIsOn,
-      currentPower: online
-          ? _asDouble(
-              _pick(data, ['power_w', 'currentPower', 'power_W', 'powerW']),
-            )
-          : 0.0,
+      currentPower: online ? rawPower : 0.0,
       branch: _asString(
         _pick(data, ['branch', 'zone']),
         fallback: _branchFromDeviceId(deviceId),
@@ -1680,11 +1887,9 @@ class KahrabaIqApiService {
       controllable: _asBool(_pick(data, ['controllable']), fallback: true),
       commandInProgress: commandInProgress,
       energySupported: energySupported,
-      voltage: _asDouble(_pick(data, ['voltage_v', 'voltage_V', 'voltageV'])),
-      current: _asDouble(_pick(data, ['current_a', 'current_A', 'currentA'])),
-      energyToday: _asDouble(
-        _pick(data, ['energy_kwh', 'energy_kWh', 'energyKwh', 'today_kwh']),
-      ),
+      voltage: voltage,
+      current: current,
+      energyToday: energyToday,
       controlMethod: _asNullableString(
         _pick(data, ['control_method', 'controlMethod']),
       ),
@@ -1931,6 +2136,205 @@ class KahrabaIqApiService {
     return HomeSettings(_asMap(_asMap(response.data)['settings']));
   }
 
+  Future<EnergyHistoryData> fetchEnergyHistory({required String homeId}) async {
+    if (usesLocalPiApi) {
+      return const EnergyHistoryData(
+        powerHistory: [],
+        hourlyUsage: [],
+        dailyEnergy: [],
+        monthlyEnergy: [],
+        costHistory: [],
+        breakerContribution: [],
+        peakUsageHours: [],
+        homeLearningProfile: HomeLearningProfile(
+          status: 'learning',
+          adaptiveReadiness: 0,
+          averageDailyKwh: 0,
+          averageDailyCostBhd: 0,
+          expectedMonthlyKwh: 0,
+          expectedMonthlyCostBhd: 0,
+          hourlySummaryCount: 0,
+          dailySummaryCount: 0,
+          trainedAt: null,
+          profileVersion: '',
+        ),
+      );
+    }
+    final response = await _dio.get('/api/homes/$homeId/energy/history');
+    final data = _asMap(response.data);
+    return EnergyHistoryData(
+      powerHistory: _asList(
+        data['power_history'],
+      ).map(_parseEnergyHistoryPoint).toList(),
+      hourlyUsage: _asList(
+        data['hourly_usage'],
+      ).map(_parseEnergyHistoryPoint).toList(),
+      dailyEnergy: _asList(
+        data['daily_energy'],
+      ).map(_parseEnergyHistoryPoint).toList(),
+      monthlyEnergy: _asList(
+        data['monthly_energy'],
+      ).map(_parseEnergyHistoryPoint).toList(),
+      costHistory: _asList(
+        data['cost_history'],
+      ).map(_parseEnergyHistoryPoint).toList(),
+      breakerContribution: _asList(
+        data['breaker_contribution'],
+      ).map(_parseBreakerContribution).toList(),
+      peakUsageHours: _asList(
+        data['peak_usage_hours'],
+      ).map(_parseEnergyHistoryPoint).toList(),
+      homeLearningProfile: _parseHomeLearningProfile(
+        _asMap(data['home_learning_profile']),
+      ),
+    );
+  }
+
+  Future<EnergyBudgetData> fetchEnergyBudget({required String homeId}) async {
+    if (usesLocalPiApi) {
+      return const EnergyBudgetData(
+        monthlyBudgetBhd: 0,
+        currentMonthCostBhd: 0,
+        currentMonthEnergyKwh: 0,
+        remainingBudgetBhd: 0,
+        percentageUsed: 0,
+        daysRemaining: 0,
+        averageDailyCostBhd: 0,
+        recommendedDailyLimitBhd: 0,
+        predictedMonthlyCostBhd: 0,
+        predictedDifferenceBhd: 0,
+        status: 'no_budget',
+        dailyProgress: [],
+        breakerContribution: [],
+        estimatedSavings: EstimatedSavings(
+          estimatedSavedKwh: 0,
+          estimatedSavedBhd: 0,
+          baselineKwhToDate: 0,
+          baselineCostToDateBhd: 0,
+          baselineDailyKwh: 0,
+          baselineDailyCostBhd: 0,
+          confidence: 0,
+          method: '',
+          note: '',
+        ),
+        homeLearningProfile: HomeLearningProfile(
+          status: 'learning',
+          adaptiveReadiness: 0,
+          averageDailyKwh: 0,
+          averageDailyCostBhd: 0,
+          expectedMonthlyKwh: 0,
+          expectedMonthlyCostBhd: 0,
+          hourlySummaryCount: 0,
+          dailySummaryCount: 0,
+          trainedAt: null,
+          profileVersion: '',
+        ),
+        monthDataAvailable: false,
+        reasonIfUnavailable: '',
+      );
+    }
+    final response = await _dio.get('/api/homes/$homeId/energy/budget');
+    final data = _asMap(response.data);
+    return EnergyBudgetData(
+      monthlyBudgetBhd: _asDouble(data['monthly_budget_bhd']),
+      currentMonthCostBhd: _asDouble(data['current_month_cost_bhd']),
+      currentMonthEnergyKwh: _asDouble(data['current_month_energy_kwh']),
+      remainingBudgetBhd: _asDouble(data['remaining_budget_bhd']),
+      percentageUsed: _asDouble(data['percentage_used']),
+      daysRemaining: _asInt(data['days_remaining']),
+      averageDailyCostBhd: _asDouble(data['average_daily_cost_bhd']),
+      recommendedDailyLimitBhd: _asDouble(data['recommended_daily_limit_bhd']),
+      predictedMonthlyCostBhd: _asDouble(data['predicted_monthly_cost_bhd']),
+      predictedDifferenceBhd: _asDouble(data['predicted_difference_bhd']),
+      status: _asString(data['status'], fallback: 'no_budget'),
+      dailyProgress: _asList(
+        data['daily_budget_progress'],
+      ).map(_parseDailyBudgetProgress).toList(),
+      breakerContribution: _asList(
+        data['breaker_contribution'],
+      ).map(_parseBreakerContribution).toList(),
+      estimatedSavings: _parseEstimatedSavings(
+        _asMap(data['estimated_savings']),
+      ),
+      homeLearningProfile: _parseHomeLearningProfile(
+        _asMap(data['home_learning_profile']),
+      ),
+      monthDataAvailable: _asBool(data['month_data_available']),
+      reasonIfUnavailable: _asString(data['reason_if_unavailable']),
+    );
+  }
+
+  HomeLearningProfile _parseHomeLearningProfile(Map<String, dynamic> data) {
+    return HomeLearningProfile(
+      status: _asString(data['status'], fallback: 'learning'),
+      adaptiveReadiness: _asDouble(data['adaptive_readiness']),
+      averageDailyKwh: _asDouble(data['average_daily_kwh']),
+      averageDailyCostBhd: _asDouble(data['average_daily_cost_bhd']),
+      expectedMonthlyKwh: _asDouble(data['expected_monthly_kwh']),
+      expectedMonthlyCostBhd: _asDouble(data['expected_monthly_cost_bhd']),
+      hourlySummaryCount: _asInt(data['hourly_summary_count']),
+      dailySummaryCount: _asInt(data['daily_summary_count']),
+      trainedAt:
+          data.containsKey('trained_at_ms') ||
+              data.containsKey('trained_at_iso')
+          ? _asDateTime(_pick(data, ['trained_at_ms', 'trained_at_iso']))
+          : null,
+      profileVersion: _asString(data['profile_version']),
+    );
+  }
+
+  EstimatedSavings _parseEstimatedSavings(Map<String, dynamic> data) {
+    return EstimatedSavings(
+      estimatedSavedKwh: _asDouble(data['estimated_saved_kwh']),
+      estimatedSavedBhd: _asDouble(data['estimated_saved_bhd']),
+      baselineKwhToDate: _asDouble(data['baseline_kwh_to_date']),
+      baselineCostToDateBhd: _asDouble(data['baseline_cost_to_date_bhd']),
+      baselineDailyKwh: _asDouble(data['baseline_daily_kwh']),
+      baselineDailyCostBhd: _asDouble(data['baseline_daily_cost_bhd']),
+      confidence: _asDouble(data['confidence']),
+      method: _asString(data['method']),
+      note: _asString(data['note']),
+    );
+  }
+
+  EnergyHistoryPoint _parseEnergyHistoryPoint(Map<String, dynamic> data) {
+    return EnergyHistoryPoint(
+      timestamp: _asDateTime(
+        _pick(data, ['timestamp_ms', 'timestamp_iso', 'date']),
+      ),
+      label: _asString(_pick(data, ['label', 'date', 'period', 'month'])),
+      kwh: _asDouble(_pick(data, ['kwh', 'energy_kwh'])),
+      costBhd: _asDouble(_pick(data, ['cost_bhd', 'costBhd'])),
+      powerW: _asDouble(_pick(data, ['power_w', 'powerW'])),
+    );
+  }
+
+  BreakerContribution _parseBreakerContribution(Map<String, dynamic> data) {
+    final id = _asString(_pick(data, ['breaker_id', 'id']));
+    return BreakerContribution(
+      breakerId: id,
+      name: _asString(_pick(data, ['name']), fallback: id),
+      branch: _asString(_pick(data, ['branch']), fallback: 'Breaker'),
+      energyKwh: _asDouble(_pick(data, ['energy_kwh', 'kwh'])),
+      costBhd: _asDouble(_pick(data, ['cost_bhd', 'costBhd'])),
+      percentage: _asDouble(_pick(data, ['percentage', 'percent'])),
+    );
+  }
+
+  DailyBudgetProgress _parseDailyBudgetProgress(Map<String, dynamic> data) {
+    return DailyBudgetProgress(
+      timestamp: _asDateTime(
+        _pick(data, ['timestamp_ms', 'timestamp_iso', 'date']),
+      ),
+      label: _asString(_pick(data, ['label', 'date', 'period'])),
+      actualCostBhd: _asDouble(
+        _pick(data, ['actual_cost_bhd', 'cost_bhd', 'costBhd']),
+      ),
+      recommendedCostBhd: _asDouble(data['recommended_cost_bhd']),
+      overRecommended: _asBool(data['over_recommended']),
+    );
+  }
+
   Future<List<ScheduleInfo>> fetchSchedules({
     required String homeId,
     CancelToken? cancelToken,
@@ -2155,6 +2559,18 @@ class KahrabaIqApiService {
     );
   }
 
+  Future<String> retrainHomeLearningProfile({required String homeId}) async {
+    final response = await _dio.post('/api/admin/homes/$homeId/ai/retrain');
+    final data = _asMap(response.data);
+    final profile = _asMap(data['profile']);
+    final readiness = _asDouble(profile['adaptive_readiness']);
+    return _asString(
+      data['message'],
+      fallback:
+          'Home learning profile rebuilt. Readiness ${(readiness * 100).toStringAsFixed(0)}%.',
+    );
+  }
+
   Future<void> removePlatformAdminHomeMember({
     required String homeId,
     required String uid,
@@ -2365,14 +2781,6 @@ class KahrabaIqApiService {
     required String homeId,
     bool emergency = false,
   }) async {
-    if (homeId != NetworkConfig.defaultHomeId) {
-      throw ArgumentError.value(
-        homeId,
-        'homeId',
-        'Device control is only enabled for the real home',
-      );
-    }
-
     if (!_isCommandEnabledDeviceId(deviceId)) {
       throw ArgumentError.value(deviceId, 'deviceId', 'Unsupported device ID');
     }

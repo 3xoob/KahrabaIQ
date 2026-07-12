@@ -16,6 +16,7 @@ class _GlobalAdminScreenState extends State<GlobalAdminScreen> {
   List<PlatformAdminHome> _homes = const [];
   PlatformAdminHomeDetail? _selectedDetail;
   bool _loading = true;
+  String? _retrainingHomeId;
   String? _error;
 
   @override
@@ -139,6 +140,31 @@ class _GlobalAdminScreenState extends State<GlobalAdminScreen> {
     }
   }
 
+  Future<void> _retrainHomeAi(PlatformAdminHome home) async {
+    setState(() {
+      _retrainingHomeId = home.homeId;
+      _error = null;
+    });
+    try {
+      final message = await _api.retrainHomeLearningProfile(
+        homeId: home.homeId,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not retrain home AI: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _retrainingHomeId = null);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -170,7 +196,9 @@ class _GlobalAdminScreenState extends State<GlobalAdminScreen> {
                 (home) => _HomeAdminCard(
                   home: home,
                   selected: _selectedDetail?.home.homeId == home.homeId,
+                  retraining: _retrainingHomeId == home.homeId,
                   onOpen: () => _selectHome(home),
+                  onRetrain: () => _retrainHomeAi(home),
                   onDelete: () => _deleteHome(home),
                 ),
               ),
@@ -192,13 +220,17 @@ class _HomeAdminCard extends StatelessWidget {
   const _HomeAdminCard({
     required this.home,
     required this.selected,
+    required this.retraining,
     required this.onOpen,
+    required this.onRetrain,
     required this.onDelete,
   });
 
   final PlatformAdminHome home;
   final bool selected;
+  final bool retraining;
   final VoidCallback onOpen;
+  final VoidCallback onRetrain;
   final VoidCallback onDelete;
 
   @override
@@ -255,6 +287,23 @@ class _HomeAdminCard extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: retraining ? null : onRetrain,
+              icon: retraining
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.psychology_outlined),
+              label: Text(
+                retraining ? 'Training Home AI...' : 'Retrain Home AI',
+              ),
+            ),
           ),
         ],
       ),

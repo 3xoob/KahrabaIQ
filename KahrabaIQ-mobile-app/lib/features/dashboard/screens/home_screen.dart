@@ -11,6 +11,7 @@ import '../../../core/utils/constants.dart';
 import '../../../core/widgets/alert_banner.dart';
 import '../../../core/widgets/app_state_widgets.dart';
 import '../../../shared/models/alert.dart';
+import '../../../shared/models/ai_insights.dart';
 import '../../../shared/models/device.dart';
 import '../../../shared/models/energy_reading.dart';
 import '../../../shared/models/sensor_data.dart';
@@ -19,7 +20,10 @@ import '../../../shared/services/kahrabaiq_api_service.dart';
 import '../../../shared/services/notification_service.dart';
 import '../../ai_chat/screens/ai_chatbot_screen.dart';
 import '../../demo/demo_scenarios.dart';
+import '../../demo/screens/ai_impact_showcase_screen.dart';
 import '../../demo/widgets/demo_scenario_selector.dart';
+import '../../energy/screens/energy_budget_screen.dart';
+import '../../energy/screens/energy_history_screen.dart';
 import '../../pairing/screens/qr_scanner_screen.dart';
 import '../../sensors/screens/sensors_status_screen.dart';
 import 'breakers_screen.dart';
@@ -46,6 +50,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   static const String _dashboardCachePrefix = 'kahrabaiq.dashboard.cache.';
   static const Duration _optimisticCommandHold = Duration(seconds: 12);
+  static const Duration _liveOfflineTimeout = Duration(seconds: 45);
 
   final KahrabaIqApiService _api = KahrabaIqApiService();
   String? _homeId;
@@ -54,7 +59,10 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isPlatformAdmin = false;
   DashboardData? _dashboard;
   StreamSubscription<DashboardData>? _liveSubscription;
+  Timer? _liveOfflineTimer;
+  DateTime? _lastLiveDashboardAt;
   bool _isLoading = true;
+  bool _isResolvingHomeAccess = true;
   bool _isPairing = false;
   String? _error;
   String? _dashboardNotice;
@@ -77,6 +85,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _liveOfflineTimer?.cancel();
     _liveSubscription?.cancel();
     super.dispose();
   }
@@ -86,6 +95,7 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _dashboard = _selectedDemoScenario!.dashboard;
         _isLoading = false;
+        _isResolvingHomeAccess = false;
         _error = null;
         _dashboardNotice =
             'Simulation Mode is active. Live home data and device control are paused.';
@@ -93,6 +103,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     await _liveSubscription?.cancel();
+    _liveOfflineTimer?.cancel();
     if (_dashboard == null) {
       final cached = await _loadCachedDashboard();
       if (mounted && cached != null) {
@@ -104,17 +115,18 @@ class _HomeScreenState extends State<HomeScreen> {
         );
         setState(() {
           _dashboard = cachedForDisplay;
-          _isLoading = false;
-          _dashboardNotice = _feedPauseNotice(cachedForDisplay);
+          _isLoading = !NetworkConfig.useCognitoAuth;
+          _dashboardNotice = null;
         });
       }
     }
     setState(() {
+      _isResolvingHomeAccess = NetworkConfig.useCognitoAuth;
       _isLoading = _dashboard == null;
       _error = null;
       _dashboardNotice = _dashboard == null
           ? 'Loading latest dashboard...'
-          : _feedPauseNotice(_dashboard!);
+          : null;
     });
 
     String? pairedHomeId;
@@ -125,6 +137,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _currentUserUid = null;
         _currentHomeAccess = null;
         _isPlatformAdmin = false;
+        _isResolvingHomeAccess = false;
       });
     } else {
       try {
@@ -139,6 +152,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _currentUserUid = profile.uid;
           _currentHomeAccess = selectedHome;
           _isPlatformAdmin = profile.isPlatformAdmin;
+          _isResolvingHomeAccess = false;
         });
         if (pairedHomeId == null || pairedHomeId.isEmpty) {
           setState(() {
@@ -155,11 +169,24 @@ class _HomeScreenState extends State<HomeScreen> {
         }
         setState(() {
           _isLoading = false;
+          _isResolvingHomeAccess = false;
           _error =
               'Could not load your home pairing. Please sign in again or check the backend connection.';
         });
         return;
       }
+    }
+
+    if (widget.enableRealtimeSync && NetworkConfig.useAwsIotLive) {
+      debugPrint('[KahrabaIQ IOT LIVE] subscribing before EC2 snapshot');
+      _lastLiveDashboardAt = DateTime.now();
+      _scheduleLiveOfflineWatch();
+      _liveSubscription = _api
+          .watchLiveDashboardData(homeId: pairedHomeId)
+          .listen(
+            (dashboard) => _applyDashboardData(dashboard, fromLive: true),
+            onError: _handleLiveError,
+          );
     }
 
     try {
@@ -181,34 +208,37 @@ class _HomeScreenState extends State<HomeScreen> {
       if (_dashboard != null) {
         setState(() {
           _isLoading = false;
-          _dashboardNotice =
-              'Could not refresh from EC2. Showing the latest saved dashboard data.';
+          _isResolvingHomeAccess = false;
+          _dashboardNotice = null;
         });
         return;
       }
       setState(() {
         _isLoading = false;
+        _isResolvingHomeAccess = false;
         _error =
             'Could not load the latest dashboard. Please check the backend connection and try again.';
       });
     }
-
-    if (widget.enableRealtimeSync && NetworkConfig.useAwsIotLive) {
-      debugPrint('[KahrabaIQ IOT LIVE] subscribing after EC2 snapshot');
-      _liveSubscription = _api
-          .watchLiveDashboardData(homeId: pairedHomeId)
-          .listen(_applyDashboardData, onError: _handleLiveError);
-    }
   }
 
-  void _applyDashboardData(DashboardData dashboard) {
+  void _applyDashboardData(DashboardData dashboard, {bool fromLive = false}) {
     if (!mounted) {
       return;
     }
     if (_selectedDemoScenario != null) {
       return;
     }
-    final mergedDashboard = _mergeLiveDashboardData(dashboard);
+    var mergedDashboard = _mergeLiveDashboardData(dashboard);
+    if (fromLive) {
+      _lastLiveDashboardAt = DateTime.now();
+      _scheduleLiveOfflineWatch();
+    } else if (NetworkConfig.useAwsIotLive && _lastLiveDashboardAt != null) {
+      final liveAge = DateTime.now().difference(_lastLiveDashboardAt!);
+      if (liveAge >= _liveOfflineTimeout) {
+        mergedDashboard = _dashboardAsOffline(mergedDashboard, liveAge);
+      }
+    }
     debugPrint(
       '[KahrabaIQ DASHBOARD DISPLAY] '
       'power=${mergedDashboard.reading.power} '
@@ -239,11 +269,77 @@ class _HomeScreenState extends State<HomeScreen> {
         (deviceId, _) => liveDeviceIds.contains(deviceId),
       );
       _isLoading = false;
+      _isResolvingHomeAccess = false;
       _error = null;
-      _dashboardNotice = NetworkConfig.useAwsIotLive
-          ? _feedPauseNotice(mergedDashboard)
-          : null;
+      _dashboardNotice = NetworkConfig.useAwsIotLive ? null : null;
     });
+  }
+
+  void _scheduleLiveOfflineWatch() {
+    _liveOfflineTimer?.cancel();
+    _liveOfflineTimer = Timer(_liveOfflineTimeout, _markLiveDashboardOffline);
+  }
+
+  void _markLiveDashboardOffline() {
+    if (!mounted || _selectedDemoScenario != null) {
+      return;
+    }
+    final dashboard = _dashboard;
+    final lastLive = _lastLiveDashboardAt;
+    if (dashboard == null || lastLive == null) {
+      return;
+    }
+    final liveAge = DateTime.now().difference(lastLive);
+    if (liveAge < _liveOfflineTimeout) {
+      _scheduleLiveOfflineWatch();
+      return;
+    }
+    setState(() {
+      _dashboard = _dashboardAsOffline(dashboard, liveAge);
+      _dashboardNotice = null;
+    });
+  }
+
+  DashboardData _dashboardAsOffline(DashboardData dashboard, Duration liveAge) {
+    final now = DateTime.now();
+    return dashboard.copyWith(
+      reading: EnergyReading(
+        timestamp: now,
+        voltage: 0,
+        current: 0,
+        power: 0,
+        energyToday: dashboard.reading.energyToday,
+        energyMonth: dashboard.reading.energyMonth,
+        energyTotal: dashboard.reading.energyTotal,
+        costToday: dashboard.reading.costToday,
+        costMonth: dashboard.reading.costMonth,
+        monthDataAvailable: dashboard.reading.monthDataAvailable,
+        monthSource: dashboard.reading.monthSource,
+      ),
+      sensors: dashboard.sensors.copyWith(online: false),
+      devices: dashboard.devices
+          .map(
+            (device) => device.copyWith(
+              isOn: false,
+              currentPower: 0,
+              online: false,
+              localOnline: false,
+              stale: true,
+              commandInProgress: false,
+              pendingTargetState: null,
+              statusLabel: 'offline',
+              lastSeenAgeSeconds: liveAge.inSeconds.toDouble(),
+            ),
+          )
+          .toList(),
+      hubStatus: {
+        ...dashboard.hubStatus,
+        'online': false,
+        'stale': true,
+        'status_label': 'offline',
+        'last_seen_age_seconds': liveAge.inSeconds,
+      },
+    );
   }
 
   DashboardData _mergeLiveDashboardData(DashboardData incoming) {
@@ -634,32 +730,24 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_dashboard == null) {
       setState(() {
         _isLoading = false;
-        _dashboardNotice = 'Waiting for the latest dashboard snapshot.';
+        _dashboardNotice = null;
       });
       return;
     }
     setState(() {
-      _dashboardNotice = _feedPauseNotice(_dashboard!);
+      final dashboard = _dashboard!;
+      final lastLive = _lastLiveDashboardAt;
+      if (lastLive != null &&
+          DateTime.now().difference(lastLive) >= _liveOfflineTimeout) {
+        _dashboard = _dashboardAsOffline(
+          dashboard,
+          DateTime.now().difference(lastLive),
+        );
+        _dashboardNotice = null;
+      } else {
+        _dashboardNotice = null;
+      }
     });
-  }
-
-  String? _feedPauseNotice(DashboardData dashboard) {
-    if (dashboard.scenarioId != null) {
-      return null;
-    }
-    final breakersPaused = dashboard.devices
-        .where((device) => device.id.startsWith('breaker_'))
-        .any((device) => !device.online || device.stale);
-    final sensorsPaused = !dashboard.sensors.online;
-    final paused = <String>[
-      if (breakersPaused) 'breakers',
-      if (sensorsPaused) 'sensors',
-    ];
-    if (paused.isEmpty) {
-      return null;
-    }
-    final label = paused.join(' and ');
-    return '${label[0].toUpperCase()}${label.substring(1)} data updates are paused. Showing the latest available dashboard data.';
   }
 
   Future<DashboardData?> _loadCachedDashboard() async {
@@ -779,6 +867,8 @@ class _HomeScreenState extends State<HomeScreen> {
             ? _DashboardLoading(onRetry: () => _loadDashboard())
             : _error != null
             ? AppErrorState(message: _error!, onRetry: () => _loadDashboard())
+            : _isResolvingHomeAccess
+            ? _DashboardLoading(onRetry: () => _loadDashboard())
             : !isPaired
             ? _UnpairedHomeState(
                 name: _displayName(),
@@ -811,9 +901,13 @@ class _HomeScreenState extends State<HomeScreen> {
                       const SizedBox(height: 16),
                       _DashboardNotice(message: _dashboardNotice!),
                     ],
-                    if (_hubOfflineNotice(dashboard) != null) ...[
+                    if (_sensorPauseNotice(dashboard) != null) ...[
                       const SizedBox(height: 16),
-                      _DashboardNotice(message: _hubOfflineNotice(dashboard)!),
+                      _DashboardNotice(message: _sensorPauseNotice(dashboard)!),
+                    ],
+                    if (_hubPauseNotice(dashboard) != null) ...[
+                      const SizedBox(height: 16),
+                      _DashboardNotice(message: _hubPauseNotice(dashboard)!),
                     ],
                     if (NetworkConfig.enableDemoScenarios) ...[
                       const SizedBox(height: 16),
@@ -823,6 +917,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         isGeneratingAi: _scenarioAiBusy,
                         onSelect: _activateDemoScenario,
                         onReturnToLive: _returnToLiveData,
+                        onOpenImpactShowcase: _openImpactShowcase,
                       ),
                     ],
                     const SizedBox(height: 24),
@@ -838,7 +933,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     QuickStatsRow(
                       reading: dashboard.reading,
                       devices: dashboard.devices,
+                      settingsSummary: dashboard.settingsSummary,
                       onBreakersTap: () => _openBreakers(dashboard.devices),
+                      onBudgetTap: _openBudget,
                     ),
                     const SizedBox(height: 16),
                     if (dashboard.alerts
@@ -872,6 +969,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     _AiAnalysisSection(
                       dashboard: dashboard,
                       onOpenChat: _openChat,
+                      onOpenHistory: _openEnergyHistory,
                     ),
                     const SizedBox(height: 22),
                     DevicesSection(
@@ -1044,15 +1142,79 @@ class _HomeScreenState extends State<HomeScreen> {
     ),
   );
 
-  String? _hubOfflineNotice(DashboardData dashboard) {
+  void _openEnergyHistory() {
+    final dashboard = _dashboard;
+    if (dashboard == null) {
+      return;
+    }
+    Navigator.of(context).push(
+      fadeSlideRoute(
+        EnergyHistoryScreen(
+          homeId: _homeId ?? NetworkConfig.defaultHomeId,
+          dashboard: dashboard,
+        ),
+      ),
+    );
+  }
+
+  void _openBudget() {
+    final dashboard = _dashboard;
+    Navigator.of(context).push(
+      fadeSlideRoute(
+        EnergyBudgetScreen(
+          homeId: _homeId ?? NetworkConfig.defaultHomeId,
+          scenarioDashboard: dashboard?.scenarioId != null ? dashboard : null,
+        ),
+      ),
+    );
+  }
+
+  String? _sensorPauseNotice(DashboardData dashboard) {
     if (dashboard.scenarioId != null) {
       return null;
     }
-    final online = dashboard.hubStatus['online'];
-    if (online == false) {
-      return 'Hub offline. Showing latest cloud data.';
+    final sensors = dashboard.sensors;
+    if (!sensors.online || sensors.timestamp.year < 2024) {
+      return 'Sensor data updates are paused.';
+    }
+    final staleAfter = Duration(
+      seconds:
+          (_dashboardSettingsNumber(
+                    dashboard.settingsSummary,
+                    'sensor_stale_minutes',
+                    fallback: 3,
+                  ) *
+                  60)
+              .round(),
+    );
+    if (DateTime.now().difference(sensors.timestamp) > staleAfter) {
+      return 'Sensor data updates are paused.';
     }
     return null;
+  }
+
+  String? _hubPauseNotice(DashboardData dashboard) {
+    if (dashboard.scenarioId != null) {
+      return null;
+    }
+    final hubOnline = dashboard.hubStatus['online'];
+    final hubStale = dashboard.hubStatus['stale'];
+    if (hubOnline == false || hubStale == true) {
+      return 'Pi hub updates are paused.';
+    }
+    return null;
+  }
+
+  double _dashboardSettingsNumber(
+    Map<String, dynamic> values,
+    String key, {
+    required double fallback,
+  }) {
+    final value = values[key];
+    if (value is num) {
+      return value.toDouble();
+    }
+    return double.tryParse(value?.toString() ?? '') ?? fallback;
   }
 
   Future<void> _activateDemoScenario(DemoScenarioData scenario) async {
@@ -1332,6 +1494,10 @@ class _HomeScreenState extends State<HomeScreen> {
     await _loadDashboard();
   }
 
+  void _openImpactShowcase() {
+    Navigator.of(context).push(fadeSlideRoute(const AiImpactShowcaseScreen()));
+  }
+
   String _displayName() {
     if (!NetworkConfig.useCognitoAuth) {
       return 'Guest';
@@ -1447,10 +1613,15 @@ class _UnpairedHomeState extends StatelessWidget {
 }
 
 class _AiAnalysisSection extends StatelessWidget {
-  const _AiAnalysisSection({required this.dashboard, required this.onOpenChat});
+  const _AiAnalysisSection({
+    required this.dashboard,
+    required this.onOpenChat,
+    required this.onOpenHistory,
+  });
 
   final DashboardData dashboard;
   final VoidCallback onOpenChat;
+  final VoidCallback onOpenHistory;
 
   Color get _toneColor {
     final tone = dashboard.aiDashboard?.statusTone.toLowerCase() ?? '';
@@ -1461,6 +1632,9 @@ class _AiAnalysisSection extends StatelessWidget {
   }
 
   String get _statusLabel {
+    if (_forecastPaused) {
+      return 'Waiting for fresh data';
+    }
     final label = dashboard.aiDashboard?.statusLabel.trim() ?? '';
     return label.isEmpty ? 'Learning' : label;
   }
@@ -1468,6 +1642,9 @@ class _AiAnalysisSection extends StatelessWidget {
   String get _summary {
     if (dashboard.scenarioId != null && dashboard.aiDashboard == null) {
       return 'Demo scenario AI result is being prepared.';
+    }
+    if (_forecastPaused) {
+      return 'Live data is stale, so KahrabaIQ paused forecasting until fresh readings arrive.';
     }
     final ai = dashboard.aiDashboard;
     if (ai != null && ai.statusSummary.trim().isNotEmpty) {
@@ -1480,6 +1657,9 @@ class _AiAnalysisSection extends StatelessWidget {
   }
 
   String get _explanation {
+    if (_forecastPaused) {
+      return 'The Pi, sensors, or breakers need to report fresh data before AI can make a useful next-hour energy prediction.';
+    }
     final ai = dashboard.aiDashboard;
     if (ai != null && ai.explanation.trim().isNotEmpty) {
       return ai.explanation;
@@ -1488,6 +1668,9 @@ class _AiAnalysisSection extends StatelessWidget {
   }
 
   String get _actionText {
+    if (_forecastPaused) {
+      return 'Check Pi / sensors / breakers';
+    }
     final ai = dashboard.aiDashboard;
     if (ai != null && ai.actionTitle.trim().isNotEmpty) {
       return ai.actionTitle;
@@ -1497,6 +1680,80 @@ class _AiAnalysisSection extends StatelessWidget {
       return recommendation.title;
     }
     return 'Waiting for prediction';
+  }
+
+  bool get _forecastPaused {
+    if (dashboard.scenarioId != null) {
+      return false;
+    }
+    final ai = dashboard.aiDashboard;
+    final aiStatus = [
+      ai?.statusCode,
+      ai?.statusLabel,
+      ai?.recommendationType,
+      ai?.actionTitle,
+    ].whereType<String>().join(' ').toLowerCase();
+    final staleAiStatus =
+        aiStatus.contains('needs_fresh') ||
+        aiStatus.contains('stale_ai') ||
+        aiStatus.contains('check_sensor') ||
+        aiStatus.contains('check_connectivity') ||
+        aiStatus.contains('waiting for fresh');
+    return staleAiStatus ||
+        _hubOffline ||
+        _sensorDataStale ||
+        _breakerDataStale;
+  }
+
+  bool get _hubOffline => dashboard.hubStatus['online'] == false;
+
+  bool get _sensorDataStale {
+    final sensors = dashboard.sensors;
+    if (!sensors.online || sensors.timestamp.year < 2024) {
+      return true;
+    }
+    final staleAfter = Duration(
+      seconds: (_settingsNumber('sensor_stale_minutes', 3) * 60).round(),
+    );
+    return DateTime.now().difference(sensors.timestamp) > staleAfter;
+  }
+
+  bool get _breakerDataStale {
+    final breakers = dashboard.devices
+        .where((device) => device.id.startsWith('breaker_'))
+        .toList();
+    if (breakers.isEmpty) {
+      return false;
+    }
+    return breakers.any((device) => !device.online || device.stale);
+  }
+
+  double _settingsNumber(String key, double fallback) {
+    final value = dashboard.settingsSummary[key];
+    if (value is num) {
+      return value.toDouble();
+    }
+    return double.tryParse(value?.toString() ?? '') ?? fallback;
+  }
+
+  String _energyForecastLabel(AiDashboardSummary? ai) {
+    if (ai == null) {
+      return 'No prediction yet';
+    }
+    if (_forecastPaused) {
+      return '-- kWh';
+    }
+    return '${ai.nextHourEnergyKwh.toStringAsFixed(3)} kWh next hour';
+  }
+
+  String _costForecastLabel(AiDashboardSummary? ai) {
+    if (ai == null) {
+      return 'Cost pending';
+    }
+    if (_forecastPaused) {
+      return '-- BHD';
+    }
+    return '${ai.nextHourCostBhd.toStringAsFixed(3)} BHD';
   }
 
   String get _notificationText {
@@ -1528,173 +1785,186 @@ class _AiAnalysisSection extends StatelessWidget {
         ? dashboard.actionSuggestions.first.reason
         : dashboard.aiRecommendation?.message ?? _explanation;
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: ColorTokens.surfaceElevated,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onOpenHistory,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _toneColor.withValues(alpha: 0.35)),
-        boxShadow: const [BoxShadow(color: ColorTokens.shadow, blurRadius: 18)],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: ColorTokens.surfaceElevated,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: _toneColor.withValues(alpha: 0.35)),
+            boxShadow: const [
+              BoxShadow(color: ColorTokens.shadow, blurRadius: 18),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                  color: _toneColor.withValues(alpha: 0.16),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(Icons.psychology_alt, color: _toneColor, size: 22),
+              Row(
+                children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: _toneColor.withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                      Icons.psychology_alt,
+                      color: _toneColor,
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('AI Energy Analysis', style: AppTextStyles.h3),
+                        const SizedBox(height: 2),
+                        Text(
+                          _statusLabel,
+                          style: AppTextStyles.caption.copyWith(
+                            color: _toneColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: onOpenChat,
+                    icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                    label: const Text('Ask AI'),
+                  ),
+                ],
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+              if (dashboard.scenarioId != null) ...[
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
                   children: [
-                    Text('AI Energy Analysis', style: AppTextStyles.h3),
-                    const SizedBox(height: 2),
-                    Text(
-                      _statusLabel,
-                      style: AppTextStyles.caption.copyWith(color: _toneColor),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: ColorTokens.warning.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: ColorTokens.warning.withValues(alpha: 0.45),
+                        ),
+                      ),
+                      child: Text(
+                        'Simulation Mode: ${dashboard.scenarioName ?? 'Demo Scenario'}',
+                        style: AppTextStyles.caption.copyWith(
+                          color: ColorTokens.warning,
+                        ),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: ColorTokens.primary.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: ColorTokens.primary.withValues(alpha: 0.35),
+                        ),
+                      ),
+                      child: Text(
+                        _scenarioSourceLabel,
+                        style: AppTextStyles.caption.copyWith(
+                          color: ColorTokens.primary,
+                        ),
+                      ),
                     ),
                   ],
                 ),
-              ),
-              TextButton.icon(
-                onPressed: onOpenChat,
-                icon: const Icon(Icons.chat_bubble_outline, size: 18),
-                label: const Text('Ask AI'),
-              ),
-            ],
-          ),
-          if (dashboard.scenarioId != null) ...[
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: ColorTokens.warning.withValues(alpha: 0.14),
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(
-                      color: ColorTokens.warning.withValues(alpha: 0.45),
-                    ),
-                  ),
-                  child: Text(
-                    'Simulation Mode: ${dashboard.scenarioName ?? 'Demo Scenario'}',
-                    style: AppTextStyles.caption.copyWith(
-                      color: ColorTokens.warning,
-                    ),
-                  ),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: ColorTokens.primary.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(
-                      color: ColorTokens.primary.withValues(alpha: 0.35),
-                    ),
-                  ),
-                  child: Text(
-                    _scenarioSourceLabel,
-                    style: AppTextStyles.caption.copyWith(
-                      color: ColorTokens.primary,
-                    ),
-                  ),
-                ),
               ],
-            ),
-          ],
-          const SizedBox(height: 14),
-          Text(_summary, style: AppTextStyles.bodyMedium),
-          const SizedBox(height: 10),
-          Text(_explanation, style: AppTextStyles.caption),
-          const SizedBox(height: 14),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              _AiMetricChip(
-                icon: Icons.bolt,
-                label: ai == null
-                    ? 'No prediction yet'
-                    : '${ai.nextHourEnergyKwh.toStringAsFixed(3)} kWh next hour',
+              const SizedBox(height: 14),
+              Text(_summary, style: AppTextStyles.bodyMedium),
+              const SizedBox(height: 10),
+              Text(_explanation, style: AppTextStyles.caption),
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _AiMetricChip(
+                    icon: Icons.bolt,
+                    label: _energyForecastLabel(ai),
+                  ),
+                  _AiMetricChip(
+                    icon: Icons.savings_outlined,
+                    label: _costForecastLabel(ai),
+                  ),
+                  _AiMetricChip(
+                    icon: Icons.tips_and_updates_outlined,
+                    label: _actionText,
+                  ),
+                ],
               ),
-              _AiMetricChip(
-                icon: Icons.savings_outlined,
-                label: ai == null
-                    ? 'Cost pending'
-                    : '${ai.nextHourCostBhd.toStringAsFixed(3)} BHD',
-              ),
-              _AiMetricChip(
-                icon: Icons.tips_and_updates_outlined,
-                label: _actionText,
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          if (_notificationText.isNotEmpty) ...[
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: _toneColor.withValues(alpha: 0.10),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: _toneColor.withValues(alpha: 0.28)),
-              ),
-              child: Text(
-                _notificationText,
-                style: AppTextStyles.caption.copyWith(
-                  color: ColorTokens.textPrimary,
-                ),
-              ),
-            ),
-            const SizedBox(height: 14),
-          ],
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: ColorTokens.surface,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: ColorTokens.border),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(
-                  Icons.lightbulb_outline,
-                  color: ColorTokens.warning,
-                  size: 20,
-                ),
-                const SizedBox(width: 10),
-                Expanded(
+              const SizedBox(height: 14),
+              if (_notificationText.isNotEmpty) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: _toneColor.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: _toneColor.withValues(alpha: 0.28),
+                    ),
+                  ),
                   child: Text(
-                    suggestion.trim().isEmpty
-                        ? 'No suggestion yet.'
-                        : suggestion,
+                    _notificationText,
                     style: AppTextStyles.caption.copyWith(
                       color: ColorTokens.textPrimary,
                     ),
                   ),
                 ),
+                const SizedBox(height: 14),
               ],
-            ),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: ColorTokens.surface,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: ColorTokens.border),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(
+                      Icons.lightbulb_outline,
+                      color: ColorTokens.warning,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        suggestion.trim().isEmpty
+                            ? 'No suggestion yet.'
+                            : suggestion,
+                        style: AppTextStyles.caption.copyWith(
+                          color: ColorTokens.textPrimary,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

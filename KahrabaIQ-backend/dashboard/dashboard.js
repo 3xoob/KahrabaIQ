@@ -49,7 +49,9 @@ function deviceState(device) {
 }
 
 function deviceStatusClass(device, state) {
-  if (state === "offline") return "offline";
+  const normalized = String(state || "").toLowerCase();
+  if (normalized === "offline") return "offline";
+  if (normalized === "off") return "off";
   if (device.stale) return "stale";
   return "";
 }
@@ -71,6 +73,39 @@ function sensorDevice(devices) {
   }) || {};
 }
 
+function deviceSortValue(device) {
+  const explicit = Number(device.display_order ?? device.sort_order ?? device.order ?? device.position);
+  if (Number.isFinite(explicit)) return explicit;
+  const id = String(device.device_id || device.id || device._dashboardKey || "");
+  const match = id.match(/([0-9]+)/);
+  return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+}
+
+function deviceSortRank(device) {
+  const type = String(device.type || "").toLowerCase();
+  if (type.includes("breaker")) return 0;
+  if (device.controllable === true) return 1;
+  return 2;
+}
+
+function deviceSortText(device) {
+  return [
+    device.branch,
+    device.name,
+    device.device_id,
+    device.id,
+    device._dashboardKey,
+  ].map((value) => String(value || "").trim().toLowerCase()).join("|");
+}
+
+function compareDevices(a, b) {
+  const rankDiff = deviceSortRank(a) - deviceSortRank(b);
+  if (rankDiff) return rankDiff;
+  const valueDiff = deviceSortValue(a) - deviceSortValue(b);
+  if (valueDiff) return valueDiff;
+  return deviceSortText(a).localeCompare(deviceSortText(b), undefined, { numeric: true, sensitivity: "base" });
+}
+
 function dashboardPayload(data) {
   const raw = data.dashboard || {};
   return raw.dashboard && typeof raw.dashboard === "object" ? raw.dashboard : raw;
@@ -86,11 +121,15 @@ function render(data) {
   const sensorStatus = sensorHub.status || {};
   const sensorTimestamp = firstPresent(sensorPayload.timestamp_ms, sensorPayload.timestampMs, sensorStatus.last_seen_ms, sensorStatus.lastSeenMs, room.timestamp_ms, room.timestampMs);
   const sensorOnline = boolValue(firstPresent(sensorHub.online, sensorPayload.sensorOnline, sensorPayload.sensor_online, sensorPayload.online, room.sensorOnline, room.sensor_online, room.online)) && sensorPayload.stale !== true && room.stale !== true;
-  const deviceList = Object.entries(devices).map(([id, value]) => ({ id, ...(value || {}) })).filter((device) => {
+  const deviceList = Object.entries(devices).map(([key, value]) => ({
+    _dashboardKey: key,
+    id: key,
+    ...(value || {}),
+  })).filter((device) => {
     const type = String(device.type || "");
     const id = String(device.id || device.device_id || "");
     return type !== "sensor_hub" && type !== "esp32_sensor" && !id.startsWith("esp32");
-  });
+  }).sort(compareDevices);
   const breakers = deviceList.filter((device) => String(device.type || "").includes("breaker"));
   const activeBreakers = breakers.filter((device) => deviceState(device) === "on").length;
 

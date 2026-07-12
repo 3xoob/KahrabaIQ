@@ -242,10 +242,11 @@ class _AiChatbotScreenState extends State<AiChatbotScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
     return Scaffold(
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 24, 20, 16),
+          padding: EdgeInsets.fromLTRB(20, keyboardOpen ? 8 : 24, 20, 16),
           child: Column(
             children: [
               Row(
@@ -263,18 +264,21 @@ class _AiChatbotScreenState extends State<AiChatbotScreen> {
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
-              _SessionBar(
-                sessions: _sessions,
-                selectedSession: _selectedSession,
-                isDemo: _isDemo,
-                scenarioName: widget.scenarioName,
-                onSelect: _selectSession,
-                onDelete: _deleteSession,
-              ),
-              const SizedBox(height: 12),
-              QuickActionChips(onSelected: _sendPreset),
-              const SizedBox(height: 18),
+              if (!keyboardOpen) ...[
+                const SizedBox(height: 12),
+                _SessionBar(
+                  sessions: _sessions,
+                  selectedSession: _selectedSession,
+                  isDemo: _isDemo,
+                  scenarioName: widget.scenarioName,
+                  onSelect: _selectSession,
+                  onDelete: _deleteSession,
+                ),
+                const SizedBox(height: 12),
+                QuickActionChips(onSelected: _sendPreset),
+                const SizedBox(height: 18),
+              ] else
+                const SizedBox(height: 8),
               Expanded(child: _body()),
               if (_isSending) ...[
                 const SizedBox(height: 8),
@@ -296,24 +300,31 @@ class _AiChatbotScreenState extends State<AiChatbotScreen> {
 
   Widget _body() {
     if (_isLoading) {
-      return const Column(
-        children: [
-          AppShimmer(height: 72),
-          SizedBox(height: 12),
-          AppShimmer(height: 96),
-        ],
+      return const SingleChildScrollView(
+        child: Column(
+          children: [
+            AppShimmer(height: 72),
+            SizedBox(height: 12),
+            AppShimmer(height: 96),
+          ],
+        ),
       );
     }
     if (_error != null) {
       return AppErrorState(message: _error!, onRetry: _loadChat);
     }
     if (_messages.isEmpty) {
-      return AppEmptyState(
-        icon: Icons.chat_bubble_outline,
-        title: 'No conversation yet',
-        message: _isDemo
-            ? 'Ask Gemini about this simulated scenario. It will not control real devices.'
-            : 'Ask Gemini about live energy, monthly cost, safety, or device status.',
+      return SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: AppEmptyState(
+            icon: Icons.chat_bubble_outline,
+            title: 'No conversation yet',
+            message: _isDemo
+                ? 'Ask Gemini about this simulated scenario. It will not control real devices.'
+                : 'Ask Gemini about live energy, monthly cost, safety, or device status.',
+          ),
+        ),
       );
     }
     return ListView.builder(

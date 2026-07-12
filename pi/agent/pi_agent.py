@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import hashlib
 import hmac
 import secrets
@@ -16,7 +17,8 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-from local_state_store import get_path, home_snapshot, set_path
+from local_state_store import get_path, history_between, home_snapshot, set_path, summaries_between
+from timestamp_utils import BAHRAIN_TZ, ms_to_iso
 try:
     from local_command_controller import (
         execute_local_command,
@@ -82,6 +84,11 @@ _agent_state: dict[str, Any] = {
     "last_command_poll_at_ms": None,
 }
 _admin_sessions: dict[str, int] = {}
+_cloud_dashboard_cache: dict[str, Any] = {
+    "fetched_at_ms": 0,
+    "data": None,
+    "error": None,
+}
 
 
 @app.after_request
@@ -396,6 +403,410 @@ def kiosk_dashboard_data() -> dict[str, Any]:
     return data
 
 
+def as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def object_list(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        return [item for item in value.values() if isinstance(item, dict)]
+    return []
+
+
+def as_number(value: Any, fallback: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return fallback
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return fallback
+    return fallback
+
+
+def number_or_none(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def summary_energy_value(summary: dict[str, Any]) -> float | None:
+    energy = as_dict(summary.get("energy"))
+    for value in (
+        energy.get("total_estimated_energy_kWh"),
+        energy.get("total_energy_kWh"),
+        energy.get("total_energy_kwh"),
+        summary.get("total_estimated_energy_kWh"),
+        summary.get("total_energy_kWh"),
+        summary.get("total_energy_kwh"),
+        summary.get("totalEnergyKwh"),
+    ):
+        parsed = number_or_none(value)
+        if parsed is not None:
+            return max(0.0, parsed)
+
+    total = 0.0
+    found = False
+    for breaker in as_dict(summary.get("breakerSummaries")).values():
+        if not isinstance(breaker, dict):
+            continue
+        parsed = number_or_none(
+            first_present(
+                breaker.get("energyDeltaKwh"),
+                breaker.get("energy_delta_kwh"),
+                breaker.get("energy_kWh"),
+                breaker.get("energy_kwh"),
+            )
+        )
+        if parsed is not None:
+            total += max(0.0, parsed)
+            found = True
+    return round(total, 6) if found else None
+
+
+def energy_from_breaker_history(start_ms: int, end_ms: int) -> tuple[float | None, int, str]:
+    total_kwh = 0.0
+    record_count = 0
+    used_sources: list[str] = []
+    for breaker_id in ("breaker_01", "breaker_02"):
+        records = history_between(breaker_id, start_ms, end_ms)
+        record_count += len(records)
+        samples: list[tuple[int, float, float]] = []
+        for record in records:
+            timestamp = number_or_none(
+                first_present(record.get("timestamp_ms"), record.get("created_at_ms"), record.get("updated_at_ms"))
+            )
+            if timestamp is None:
+                continue
+            power_w = number_or_none(record.get("power_W"))
+            energy_kwh = number_or_none(record.get("energy_kWh"))
+            samples.append((int(timestamp), max(0.0, power_w or 0.0), max(0.0, energy_kwh or 0.0)))
+
+        samples.sort(key=lambda item: item[0])
+        energy_values = [sample[2] for sample in samples if sample[2] > 0]
+        if len(energy_values) >= 2 and energy_values[-1] >= energy_values[0]:
+            total_kwh += energy_values[-1] - energy_values[0]
+            used_sources.append(f"{breaker_id}:meter")
+            continue
+
+        integrated = 0.0
+        for (left_ms, left_power, _), (right_ms, right_power, _) in zip(samples, samples[1:]):
+            elapsed_ms = right_ms - left_ms
+            if elapsed_ms <= 0 or elapsed_ms > 300000:
+                continue
+            integrated += ((left_power + right_power) / 2) * (elapsed_ms / 3600000) / 1000
+        if integrated > 0:
+            total_kwh += integrated
+            used_sources.append(f"{breaker_id}:power_integration")
+
+    if total_kwh <= 0:
+        return None, record_count, ""
+    return round(total_kwh, 6), record_count, ",".join(used_sources)
+
+
+def local_monthly_usage_payload(home_id: str, energy: dict[str, Any], cloud_dashboard: dict[str, Any]) -> dict[str, Any]:
+    now_dt = datetime.now(BAHRAIN_TZ)
+    month_start = datetime(now_dt.year, now_dt.month, 1, tzinfo=BAHRAIN_TZ)
+    start_ms = int(month_start.timestamp() * 1000)
+    end_ms = now_ms()
+    home = home_snapshot(home_id)
+    settings = as_dict(first_present(get_path(f"homes/{home_id}/settings", {}), cloud_dashboard.get("settings")))
+    dashboard_energy = as_dict(as_dict(home.get("dashboard")).get("energy"))
+    tariff = number_or_none(
+        first_present(
+            settings.get("cost_per_kwh"),
+            energy.get("tariff_BHD_per_kWh"),
+            energy.get("tariff"),
+            dashboard_energy.get("tariff_BHD_per_kWh"),
+            dashboard_energy.get("tariff"),
+            home.get("tariff_bhd_per_kwh"),
+        )
+    )
+    if tariff is None:
+        tariff = 0.029
+
+    candidates: list[tuple[str, list[dict[str, Any]]]] = [
+        ("local_daily_summary", summaries_between("daily", start_ms, end_ms)),
+        ("local_hourly_summary", summaries_between("hourly", start_ms, end_ms)),
+        ("local_monthly_summary", summaries_between("monthly", start_ms, end_ms)),
+    ]
+    zero_fallback: dict[str, Any] | None = None
+    for source, summaries in candidates:
+        values = [value for summary in summaries if (value := summary_energy_value(summary)) is not None]
+        if not values:
+            continue
+        usage_kwh = round(sum(values), 6)
+        payload = {
+            "available": True,
+            "source": source,
+            "message": None,
+            "usage_kwh": usage_kwh,
+            "cost_bhd": round(usage_kwh * tariff, 6),
+            "tariff_bhd_per_kwh": tariff,
+            "month_start_ms": start_ms,
+            "month_start_iso": ms_to_iso(start_ms),
+            "month_end_ms": end_ms,
+            "month_end_iso": ms_to_iso(end_ms),
+            "summary_count": len(summaries),
+            "energy_value_count": len(values),
+            "updated_at_ms": end_ms,
+        }
+        if usage_kwh > 0:
+            return payload
+        if zero_fallback is None:
+            zero_fallback = payload
+
+    history_kwh, history_count, history_source = energy_from_breaker_history(start_ms, end_ms)
+    if history_kwh is not None:
+        return {
+            "available": True,
+            "source": "local_breaker_history",
+            "message": None,
+            "usage_kwh": history_kwh,
+            "cost_bhd": round(history_kwh * tariff, 6),
+            "tariff_bhd_per_kwh": tariff,
+            "month_start_ms": start_ms,
+            "month_start_iso": ms_to_iso(start_ms),
+            "month_end_ms": end_ms,
+            "month_end_iso": ms_to_iso(end_ms),
+            "summary_count": sum(len(summaries) for _, summaries in candidates),
+            "history_record_count": history_count,
+            "history_source": history_source,
+            "updated_at_ms": end_ms,
+        }
+
+    if zero_fallback is not None:
+        zero_fallback["history_record_count"] = history_count
+        return zero_fallback
+
+    summary_count = sum(len(summaries) for _, summaries in candidates)
+    return {
+        "available": False,
+        "source": "local_database",
+        "message": (
+            "No current-month local energy summaries were found yet."
+            if summary_count == 0
+            else "Current-month local summaries exist but do not contain usable energy totals."
+        ),
+        "usage_kwh": None,
+        "cost_bhd": None,
+        "tariff_bhd_per_kwh": tariff,
+        "month_start_ms": start_ms,
+        "month_start_iso": ms_to_iso(start_ms),
+        "month_end_ms": end_ms,
+        "month_end_iso": ms_to_iso(end_ms),
+        "summary_count": summary_count,
+        "history_record_count": history_count,
+    }
+
+
+def cached_cloud_dashboard_data() -> dict[str, Any]:
+    now = now_ms()
+    with _state_lock:
+        cached_at = int(_cloud_dashboard_cache.get("fetched_at_ms") or 0)
+        if cached_at and now - cached_at < 60000:
+            data = _cloud_dashboard_cache.get("data")
+            error = _cloud_dashboard_cache.get("error")
+            return {
+                "available": isinstance(data, dict),
+                "dashboard": as_dict(as_dict(data).get("dashboard")),
+                "message": error,
+                "fetched_at_ms": cached_at,
+            }
+    try:
+        data = kiosk_dashboard_data()
+        with _state_lock:
+            _cloud_dashboard_cache.update({"fetched_at_ms": now, "data": data, "error": None})
+        return {
+            "available": True,
+            "dashboard": as_dict(data.get("dashboard")),
+            "message": None,
+            "fetched_at_ms": now,
+        }
+    except Exception:
+        message = "Cloud alerts, recommendations, and QR pairing are temporarily unavailable."
+        with _state_lock:
+            _cloud_dashboard_cache.update({"fetched_at_ms": now, "data": None, "error": message})
+        return {"available": False, "dashboard": {}, "message": message, "fetched_at_ms": now}
+
+
+def cloud_monthly_usage_payload() -> dict[str, Any]:
+    session = refresh_kiosk_token()
+    token = session.get("kiosk_token")
+    if not token:
+        raise RuntimeError("Kiosk token is unavailable.")
+    response = api_request(
+        "GET",
+        "/api/kiosk/energy/budget",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    data = response.json()
+    if not response.ok or data.get("success") is False:
+        raise RuntimeError(data.get("detail") or data.get("message") or response.text)
+
+    usage_kwh = first_present(
+        data.get("current_month_energy_kwh"),
+        data.get("month_kwh"),
+        data.get("current_month_kwh"),
+    )
+    cost_bhd = first_present(
+        data.get("current_month_cost_bhd"),
+        data.get("month_cost_bhd"),
+        data.get("current_month_cost"),
+    )
+    available = data.get("month_data_available") is not False and (usage_kwh is not None or cost_bhd is not None)
+    if not available:
+        return {
+            "available": False,
+            "source": "cloud_database",
+            "message": data.get("reason_if_unavailable") or "Cloud monthly usage is not available yet.",
+            "usage_kwh": None,
+            "cost_bhd": None,
+        }
+    return {
+        "available": True,
+        "source": data.get("month_source") or "cloud_database",
+        "message": None,
+        "usage_kwh": round(as_number(usage_kwh), 6),
+        "cost_bhd": round(as_number(cost_bhd), 6),
+        "budget_bhd": data.get("monthly_budget_bhd"),
+        "percentage_used": data.get("percentage_used"),
+        "days_remaining": data.get("days_remaining"),
+        "updated_at_ms": now_ms(),
+    }
+
+
+def monthly_usage_payload(home_id: str, energy: dict[str, Any], cloud_dashboard: dict[str, Any]) -> dict[str, Any]:
+    local_monthly = local_monthly_usage_payload(home_id, energy, cloud_dashboard)
+
+    try:
+        cloud_monthly = cloud_monthly_usage_payload()
+        if cloud_monthly.get("available"):
+            return cloud_monthly
+        local_monthly["message"] = cloud_monthly.get("message") or local_monthly.get("message")
+        local_monthly["cloud_message"] = cloud_monthly.get("message")
+    except Exception:
+        local_monthly["cloud_message"] = "Cloud monthly usage is temporarily unavailable."
+
+    if local_monthly.get("available"):
+        return local_monthly
+
+    monthly = as_dict(first_present(cloud_dashboard.get("monthly_usage"), cloud_dashboard.get("monthlyUsage")))
+    source = "cloud" if monthly else "local"
+    month_kwh = first_present(
+        monthly.get("usage_kwh"),
+        monthly.get("energy_kwh"),
+        monthly.get("month_kwh"),
+        energy.get("month_kwh"),
+        energy.get("monthlyEnergyKwh"),
+        energy.get("monthEnergyKwh"),
+    )
+    month_cost = first_present(
+        monthly.get("cost_bhd"),
+        monthly.get("month_cost_bhd"),
+        monthly.get("cost"),
+        energy.get("month_cost_bhd"),
+        energy.get("monthlyCostBhd"),
+        energy.get("monthCost"),
+    )
+    if month_kwh is None and month_cost is None:
+        return local_monthly
+    return {
+        "available": True,
+        "source": source,
+        "message": None,
+        "usage_kwh": round(as_number(month_kwh), 6),
+        "cost_bhd": round(as_number(month_cost), 6),
+        "updated_at_ms": first_present(monthly.get("updated_at_ms"), energy.get("updated_at_ms"), energy.get("timestampMs")),
+    }
+
+
+def recommendations_from_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    recommendations = []
+    for item in items:
+        category = str(item.get("category") or item.get("type") or "").lower()
+        if category == "recommendation" or item.get("recommendation_type") or item.get("recommendation"):
+            recommendations.append(item)
+    return recommendations
+
+
+def local_dashboard_payload() -> dict[str, Any]:
+    live = build_live_state()
+    cloud = cached_cloud_dashboard_data()
+    cloud_dashboard = as_dict(cloud.get("dashboard"))
+    cloud_available = bool(cloud.get("available"))
+    dashboard = live.get("dashboard") if isinstance(live.get("dashboard"), dict) else {}
+    energy = live.get("energy") if isinstance(live.get("energy"), dict) else {}
+    cloud_energy = as_dict(cloud_dashboard.get("energy"))
+    if cloud_energy:
+        energy = {**energy, **cloud_energy}
+    room = live.get("room") if isinstance(live.get("room"), dict) else {}
+    devices = live.get("devices") if isinstance(live.get("devices"), dict) else {}
+    alerts = object_list(first_present(cloud_dashboard.get("alerts"), live.get("alerts")))
+    notifications = object_list(first_present(cloud_dashboard.get("notifications"), live.get("notifications")))
+    ai_notifications = object_list(
+        first_present(
+            cloud_dashboard.get("ai_notifications"),
+            cloud_dashboard.get("recommendations"),
+            dashboard.get("ai_notifications"),
+        )
+    )
+    ai = as_dict(first_present(cloud_dashboard.get("ai"), dashboard.get("ai")))
+    occupancy = live.get("occupancy") if isinstance(live.get("occupancy"), dict) else {}
+    safety = live.get("safety") if isinstance(live.get("safety"), dict) else {}
+    timestamp_ms = int(live.get("updated_at_ms") or live.get("timestamp_ms") or now_ms())
+    home_id = str(live.get("home_id") or HOME_ID or "home_001")
+    monthly = monthly_usage_payload(home_id, energy, cloud_dashboard)
+    return {
+        "success": True,
+        "source": "raspberry_pi_local_state",
+        "cloud": {
+            "available": cloud_available,
+            "message": cloud.get("message"),
+            "fetched_at_ms": cloud.get("fetched_at_ms"),
+        },
+        "pi_id": PI_ID,
+        "home_id": home_id,
+        "paired": bool(HOME_ID or live.get("home_id")),
+        "dashboard": {
+            **dashboard,
+            "energy": energy,
+            "monthly_usage": monthly,
+            "room": room,
+            "devices": devices,
+            "alerts": alerts,
+            "notifications": notifications,
+            "ai_notifications": ai_notifications,
+            "recommendations": recommendations_from_items(ai_notifications),
+            "ai": ai,
+            "occupancy": occupancy,
+            "safety": safety,
+            "updated_at_ms": timestamp_ms,
+            "updated_at_iso": ms_to_iso(timestamp_ms),
+        },
+        "updated_at_ms": timestamp_ms,
+        "updated_at_iso": ms_to_iso(timestamp_ms),
+    }
+
+
 def kiosk_home_invite_qr() -> dict[str, Any]:
     response = api_request("POST", "/api/dashboard/home-invite")
     data = response.json()
@@ -653,7 +1064,34 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
 
     [hidden] { display: none !important; }
 
-    html { background: var(--bg); }
+    html {
+      background: var(--bg);
+      scrollbar-color: rgba(255, 85, 85, 0.72) rgba(5, 5, 5, 0.78);
+      scrollbar-width: thin;
+    }
+
+    ::-webkit-scrollbar {
+      width: 12px;
+      height: 12px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: linear-gradient(180deg, rgba(5, 5, 5, 0.96), rgba(16, 16, 16, 0.92));
+      border-left: 1px solid rgba(255, 255, 255, 0.055);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background:
+        linear-gradient(180deg, rgba(255, 85, 85, 0.92), rgba(255, 45, 45, 0.56));
+      border: 3px solid rgba(8, 8, 8, 0.96);
+      border-radius: 999px;
+      box-shadow: 0 0 18px rgba(255, 45, 45, 0.22);
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background:
+        linear-gradient(180deg, rgba(255, 112, 112, 0.98), rgba(255, 45, 45, 0.72));
+    }
 
     body {
       margin: 0;
@@ -697,23 +1135,27 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
     }
 
     .shell {
-      width: min(1220px, calc(100vw - 36px));
+      width: min(1360px, calc(100vw - 32px));
       margin: 0 auto;
-      padding: 24px 0 42px;
+      padding: 20px 0 42px;
     }
 
     header {
+      position: sticky;
+      top: 12px;
+      z-index: 8;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 24px;
-      min-height: 92px;
-      margin-bottom: 22px;
-      padding: 16px 18px;
+      gap: 22px;
+      min-height: 86px;
+      margin-bottom: 18px;
+      padding: 14px 16px;
       border: 1px solid var(--border);
-      border-radius: 22px;
-      background: rgba(10, 10, 10, 0.78);
-      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(191, 195, 201, 0.08);
+      border-radius: 18px;
+      background: rgba(10, 10, 10, 0.88);
+      box-shadow: 0 24px 72px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(191, 195, 201, 0.08);
+      backdrop-filter: blur(18px);
     }
 
     .brand {
@@ -724,11 +1166,11 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
     }
 
     .brand-mark {
-      width: clamp(128px, 16vw, 176px);
+      width: 156px;
       height: auto;
       flex: 0 0 auto;
       object-fit: contain;
-      filter: drop-shadow(0 0 22px var(--glow));
+      filter: drop-shadow(0 0 18px var(--glow));
     }
 
     .brand-copy {
@@ -738,42 +1180,44 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
     h1 {
       margin: 0;
       font-family: Orbitron, Sora, Inter, sans-serif;
-      font-size: 24px;
-      font-weight: 700;
+      font-size: 25px;
+      font-weight: 800;
       line-height: 1;
-      letter-spacing: -0.02em;
+      letter-spacing: 0;
     }
 
     .eyebrow {
-      margin: 0 0 8px;
+      margin: 0 0 7px;
       color: var(--cyan-bright);
       font-family: Orbitron, Sora, Inter, sans-serif;
       font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.18em;
+      font-weight: 800;
+      letter-spacing: 0;
       text-transform: uppercase;
     }
 
     .sub {
-      margin-top: 10px;
+      margin-top: 9px;
       color: var(--muted);
-      font-size: 16px;
+      font-size: 14px;
+      font-weight: 700;
     }
 
     .pill {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      min-height: 38px;
-      padding: 0 14px;
+      gap: 9px;
+      min-height: 40px;
+      padding: 0 15px;
       border: 1px solid var(--border-strong);
       border-radius: 999px;
-      background: rgba(255, 45, 45, 0.1);
+      background: linear-gradient(180deg, rgba(255, 45, 45, 0.14), rgba(255, 45, 45, 0.06));
       color: var(--text);
       font-family: "SFMono-Regular", Consolas, monospace;
       font-size: 13px;
       font-weight: 800;
       white-space: nowrap;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 22px rgba(255, 45, 45, 0.08);
     }
 
     .dot {
@@ -786,130 +1230,173 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
 
     .grid {
       display: grid;
-      grid-template-columns: repeat(12, 1fr);
-      gap: 16px;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      grid-auto-flow: dense;
+      gap: 14px;
+      align-items: stretch;
     }
 
     .card {
       position: relative;
       overflow: hidden;
+      min-width: 0;
       background:
-        linear-gradient(135deg, rgba(255, 255, 255, 0.045), transparent 38%),
-        var(--panel);
+        linear-gradient(135deg, rgba(255, 255, 255, 0.052), transparent 34%),
+        linear-gradient(180deg, rgba(22, 22, 22, 0.98), rgba(12, 12, 12, 0.98));
       border: 1px solid var(--border);
-      border-radius: 22px;
-      padding: 22px;
-      box-shadow: 0 20px 64px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(191, 195, 201, 0.055);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 18px 56px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(191, 195, 201, 0.055);
+    }
+
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto;
+      height: 2px;
+      background: linear-gradient(90deg, rgba(255, 45, 45, 0.78), transparent 72%);
+      opacity: 0.72;
+      pointer-events: none;
+    }
+
+    .hero {
+      grid-column: span 6;
+      min-height: 276px;
+      border-color: rgba(255, 45, 45, 0.22);
+      background:
+        linear-gradient(135deg, rgba(255, 45, 45, 0.13), transparent 42%),
+        linear-gradient(180deg, rgba(24, 24, 24, 0.98), rgba(9, 9, 9, 0.98));
     }
 
     .hero::after {
       content: "";
       position: absolute;
-      right: -80px;
-      bottom: -120px;
-      width: 320px;
-      height: 320px;
+      right: -110px;
+      bottom: -150px;
+      width: 360px;
+      height: 360px;
       border-radius: 999px;
-      background: radial-gradient(circle, rgba(255, 45, 45, 0.2), transparent 68%);
+      background: radial-gradient(circle, rgba(255, 45, 45, 0.18), transparent 68%);
       pointer-events: none;
     }
 
-    .hero { grid-column: span 7; }
-    .room { grid-column: span 5; }
-    .sensors { grid-column: span 6; }
-    .notes { grid-column: span 6; }
+    .room { grid-column: span 3; }
+    .monthly { grid-column: span 3; }
     .wide { grid-column: span 12; }
+    .sensors { grid-column: span 4; }
+    .notes { grid-column: span 4; }
+    .invite-card { grid-column: span 12; }
 
     .metric-row {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 12px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
       margin-top: 18px;
     }
 
-    .metric {
-      min-height: 108px;
+    .monthly .metric-row {
+      grid-template-columns: 1fr;
+    }
+
+    .monthly .metric-row {
+      margin-top: 0;
+    }
+
+    .metric,
+    .reading {
+      min-height: 82px;
       border: 1px solid rgba(255, 255, 255, 0.055);
-      border-radius: 14px;
-      background: rgba(5, 5, 5, 0.48);
-      padding: 16px;
+      border-left-color: rgba(255, 85, 85, 0.34);
+      border-radius: 10px;
+      background: rgba(5, 5, 5, 0.36);
+      padding: 13px 14px;
+    }
+
+    .hero .metric {
+      min-height: 96px;
     }
 
     .label {
       color: var(--muted);
-      font-size: 14px;
-      font-weight: 700;
-      margin-bottom: 12px;
+      font-size: 12px;
+      font-weight: 800;
+      margin-bottom: 8px;
+      text-transform: uppercase;
     }
 
     .value {
+      position: relative;
+      z-index: 1;
+      display: inline-block;
       font-family: "SFMono-Regular", Consolas, monospace;
-      font-size: clamp(56px, 8vw, 104px);
-      font-weight: 800;
-      letter-spacing: -0.08em;
+      font-size: 88px;
+      font-weight: 900;
+      letter-spacing: 0;
       line-height: 0.92;
       color: var(--text);
+      text-shadow: 0 0 34px rgba(255, 45, 45, 0.16);
     }
 
     .unit {
-      margin-left: 6px;
+      position: relative;
+      z-index: 1;
+      margin-left: 8px;
       color: var(--muted);
       font-size: 20px;
+      font-weight: 800;
     }
 
     .small-value {
       font-family: "SFMono-Regular", Consolas, monospace;
-      font-size: 24px;
-      font-weight: 800;
+      font-size: 22px;
+      font-weight: 900;
+      line-height: 1.15;
+      overflow-wrap: anywhere;
     }
 
     .section-head {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
       gap: 14px;
+      min-height: 30px;
       margin-bottom: 16px;
     }
 
     .section-title {
       color: var(--cyan-bright);
       font-family: Orbitron, Sora, Inter, sans-serif;
-      font-size: 15px;
+      font-size: 14px;
       font-weight: 900;
-      letter-spacing: .04em;
+      letter-spacing: 0;
       text-transform: uppercase;
     }
 
     .muted {
       color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      text-align: right;
     }
 
     .reading-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
-      gap: 12px;
-    }
-
-    .reading {
-      min-height: 92px;
-      border: 1px solid rgba(255, 255, 255, 0.055);
-      border-radius: 14px;
-      background: rgba(5, 5, 5, 0.48);
-      padding: 14px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
     }
 
     .devices {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 14px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
     }
 
     .device {
-      border: 1px solid rgba(255, 255, 255, 0.055);
-      border-radius: 14px;
-      background: rgba(5, 5, 5, 0.48);
-      padding: 18px;
-      min-height: 138px;
+      border: 1px solid rgba(255, 255, 255, 0.065);
+      border-radius: 12px;
+      background: rgba(5, 5, 5, 0.4);
+      padding: 16px;
+      min-height: 136px;
     }
 
     .device-head {
@@ -917,24 +1404,28 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       align-items: flex-start;
       justify-content: space-between;
       gap: 12px;
-      margin-bottom: 18px;
+      margin-bottom: 16px;
     }
 
     .device-name {
-      font-size: 20px;
+      font-size: 19px;
       font-weight: 900;
+      line-height: 1.15;
     }
 
     .state {
+      flex: 0 0 auto;
       padding: 6px 10px;
       border-radius: 999px;
       background: rgba(18, 196, 139, 0.14);
       color: var(--green);
-      font-weight: 800;
+      font-size: 12px;
+      font-weight: 900;
       text-transform: capitalize;
     }
 
     .state.offline,
+    .state.off,
     .state.failed {
       background: rgba(255, 92, 122, 0.14);
       color: var(--red);
@@ -949,21 +1440,23 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
-      margin-top: 16px;
+      margin-top: 14px;
     }
 
     .command-actions button {
       border: 1px solid rgba(255, 45, 45, 0.28);
-      border-radius: 999px;
+      border-radius: 10px;
       min-height: 40px;
       padding: 0 16px;
-      background: rgba(255, 45, 45, 0.1);
+      background: rgba(255, 45, 45, 0.08);
       color: var(--text);
       font-weight: 900;
+      cursor: pointer;
+      transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
     }
 
     .command-actions button.primary {
-      background: var(--cyan);
+      background: linear-gradient(180deg, rgba(255, 45, 45, 0.98), rgba(190, 18, 60, 0.96));
       color: var(--text);
     }
 
@@ -973,8 +1466,16 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       border-color: rgba(255, 92, 122, 0.35);
     }
 
+    .command-actions button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(255, 85, 85, 0.5);
+      background: rgba(255, 45, 45, 0.15);
+    }
+
     .command-actions button:disabled {
       opacity: .45;
+      cursor: default;
+      transform: none;
     }
 
     .command-status {
@@ -1006,20 +1507,29 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
     }
 
     .note {
-      border-radius: 12px;
-      background: rgba(5, 5, 5, 0.48);
+      border: 1px solid rgba(255, 255, 255, 0.055);
+      border-left: 3px solid rgba(255, 85, 85, 0.48);
+      border-radius: 10px;
+      background: rgba(5, 5, 5, 0.38);
       padding: 12px 14px;
+    }
+
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 12px;
     }
 
     .overlay {
       position: fixed;
       inset: 0;
-      background: rgba(4, 6, 27, 0.82);
+      background: rgba(4, 4, 4, 0.78);
       display: none;
       align-items: center;
       justify-content: center;
       padding: 24px;
       z-index: 20;
+      backdrop-filter: blur(10px);
     }
 
     .overlay.visible {
@@ -1028,11 +1538,11 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
 
     .modal {
       width: min(520px, 100%);
-      background: #111827;
-      border: 1px solid rgba(248, 113, 113, 0.5);
-      border-radius: 20px;
+      background: linear-gradient(180deg, #171717, #0b0b0b);
+      border: 1px solid rgba(248, 113, 113, 0.46);
+      border-radius: 16px;
       padding: 24px;
-      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55), 0 0 42px rgba(255, 45, 45, 0.14);
       text-align: center;
     }
 
@@ -1049,11 +1559,11 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
 
     .modal button {
       border: none;
-      border-radius: 999px;
+      border-radius: 10px;
       padding: 12px 18px;
-      background: #dc2626;
+      background: linear-gradient(180deg, #ff2d2d, #b91c1c);
       color: white;
-      font-weight: 700;
+      font-weight: 900;
     }
 
     .admin-hotspot {
@@ -1117,9 +1627,8 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
     }
 
     .invite-card {
-      grid-column: span 12;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 240px;
+      grid-template-columns: minmax(0, 1fr) 220px;
       gap: 18px;
       align-items: center;
     }
@@ -1139,11 +1648,12 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
 
     .invite-actions button {
       border: none;
-      border-radius: 999px;
+      border-radius: 10px;
       padding: 12px 16px;
-      background: var(--cyan);
+      background: linear-gradient(180deg, rgba(255, 45, 45, 0.98), rgba(190, 18, 60, 0.96));
       color: var(--text);
       font-weight: 900;
+      cursor: pointer;
     }
 
     .invite-status {
@@ -1153,10 +1663,10 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
     }
 
     .invite-qr {
-      min-height: 220px;
+      min-height: 200px;
       display: grid;
       place-items: center;
-      border-radius: 18px;
+      border-radius: 14px;
       background: #f7f4ef;
       color: #111827;
       padding: 12px;
@@ -1170,14 +1680,24 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       display: block;
     }
 
+    @media (max-width: 1100px) {
+      .hero { grid-column: span 12; }
+      .room, .monthly { grid-column: span 6; }
+      .sensors, .notes { grid-column: span 6; }
+    }
+
     @media (max-width: 820px) {
-      header { align-items: flex-start; flex-direction: column; }
+      .shell { width: min(760px, calc(100% - 24px)); padding-top: 12px; }
+      header { position: static; align-items: flex-start; flex-direction: column; }
       .brand { align-items: flex-start; flex-direction: column; gap: 12px; }
       .brand-mark { width: 132px; }
-      .hero, .room, .sensors, .notes { grid-column: span 12; }
+      .hero, .room, .monthly, .sensors, .notes, .wide { grid-column: span 12; }
       .invite-card { grid-template-columns: 1fr; }
       .invite-qr { width: min(240px, 100%); margin: 0 auto; }
       .metric-row { grid-template-columns: 1fr; }
+      .room .two-col, .reading-grid { grid-template-columns: 1fr; }
+      .value { font-size: 60px; }
+      .muted { text-align: left; }
     }
   </style>
 </head>
@@ -1276,6 +1796,27 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
         </div>
       </article>
 
+      <article class="card monthly">
+        <div class="section-head">
+          <div class="section-title">Monthly Usage</div>
+          <div class="muted" id="monthlySource">Waiting for cloud data</div>
+        </div>
+        <div class="metric-row">
+          <div class="metric">
+            <div class="label">Usage</div>
+            <div class="small-value" id="monthlyUsage">-- kWh</div>
+          </div>
+          <div class="metric">
+            <div class="label">Cost</div>
+            <div class="small-value" id="monthlyCost">-- BD</div>
+          </div>
+          <div class="metric">
+            <div class="label">Status</div>
+            <div class="small-value" id="monthlyStatus">Waiting</div>
+          </div>
+        </div>
+      </article>
+
       <article class="card wide">
         <div class="section-head">
           <div class="section-title">Breakers & Controls</div>
@@ -1323,6 +1864,14 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
           <div class="muted">Active items only</div>
         </div>
         <div id="alerts">No active alerts.</div>
+      </article>
+
+      <article class="card notes">
+        <div class="section-head">
+          <div class="section-title">Recommendations</div>
+          <div class="muted" id="recommendationSource">Cloud AI</div>
+        </div>
+        <div id="recommendations">Waiting for recommendations.</div>
       </article>
 
       <article class="card invite-card">
@@ -1375,6 +1924,40 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       return `${fmt.format(parsed)}${suffix}`;
     }
 
+    function energyText(kwh) {
+      if (kwh === null || kwh === undefined || kwh === "") return "--";
+      const parsed = Number(kwh);
+      if (!Number.isFinite(parsed)) return String(kwh);
+      if (parsed > 0 && parsed < 1) {
+        return `${fmt.format(parsed * 1000)} Wh`;
+      }
+      return `${fmt.format(parsed)} kWh`;
+    }
+
+    function costText(value) {
+      if (value === null || value === undefined || value === "") return "-- BD";
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed)) return String(value);
+      return `${parsed.toFixed(3)} BD`;
+    }
+
+    function itemText(item) {
+      return item.title || item.message || item.body || item.recommendation || item.explanation || "Item available.";
+    }
+
+    function renderItems(nodeId, items, emptyText, unavailableText = "") {
+      const node = document.getElementById(nodeId);
+      if (!items || !items.length) {
+        node.innerHTML = unavailableText ? `<div class="notes-list"><div class="note"><span class="warn">${unavailableText}</span></div></div>` : emptyText;
+        return;
+      }
+      node.innerHTML = `<div class="notes-list">${items.map((item) => {
+        const severity = String(item.severity || item.level || "info").toLowerCase();
+        const klass = severity === "critical" || severity === "high" ? "error" : severity === "medium" ? "warn" : "";
+        return `<div class="note"><span class="${klass}">${itemText(item)}</span></div>`;
+      }).join("")}</div>`;
+    }
+
     function currentSensorValue(online, value, suffix = "") {
       return online ? valueOrDash(value, suffix) : "Unavailable";
     }
@@ -1385,13 +1968,75 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       return new Date(ms).toLocaleString();
     }
 
+    function dashboardTimeText(value) {
+      const ms = number(value, 0);
+      if (!ms) return "Waiting for live update";
+      const date = new Date(ms);
+      const day = date.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+      const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+      return `Updated ${day} at ${time}`;
+    }
+
+    function stringValue(value) {
+      return String(value ?? "").trim().toLowerCase();
+    }
+
+    function smokeSensorActive(sensorPayload, room) {
+      const status = stringValue(firstPresent(
+        sensorPayload.smoke_text,
+        sensorPayload.smoke_status,
+        sensorPayload.smokeStatus,
+        room.smoke_text,
+        room.smoke_status,
+        room.smokeStatus
+      ));
+      const raw = number(firstPresent(sensorPayload.smoke_raw, sensorPayload.smokeRaw, sensorPayload.mq2_raw, sensorPayload.mq2Raw, room.smoke_raw, room.smokeRaw), 0);
+      const explicitClear = status.includes("clear") || status.includes("normal") || status.includes("safe") || status.includes("no smoke") || status.includes("no gas");
+      if (explicitClear) return false;
+      return status.includes("detect") || status.includes("smoke") || status.includes("gas") || status.includes("alarm") || raw === 1 || boolValue(firstPresent(
+        sensorPayload.smoke,
+        sensorPayload.smokeDetected,
+        sensorPayload.smoke_detected,
+        sensorPayload.gasDetected,
+        sensorPayload.gas_detected,
+        room.smoke
+      ));
+    }
+
+    function smokeSafetyActive(safety) {
+      const smokeState = safety && typeof safety.smoke_state === "object" ? safety.smoke_state : {};
+      const emergencyMode = safety && typeof safety.emergency_mode === "object" ? safety.emergency_mode : {};
+      const safetyStatus = stringValue(smokeState.status);
+      const emergencyReason = stringValue(emergencyMode.reason);
+      const safetyReportsSmoke = safetyStatus === "pending" || safetyStatus === "confirmed";
+      const emergencyActive = emergencyMode.active === true && (emergencyReason.includes("smoke") || emergencyReason.includes("gas"));
+      const safetyReportsClear = safetyStatus === "clear" || safetyStatus === "resolved";
+      return !safetyReportsClear && (safetyReportsSmoke || emergencyActive);
+    }
+
+    function alertIsSmokeRelated(alert) {
+      const id = stringValue(alert.alert_id || alert.id || alert.alertId || alert.alert_key);
+      const severity = stringValue(alert.severity || alert.level);
+      const alertType = stringValue(alert.alert_type || alert.type || alert.category || alert.backendType);
+      const message = stringValue(`${alert.message || ""} ${alert.title || ""}`);
+      return (alert.active !== false && alert.is_active !== false) &&
+        (id === "smoke_detected_room1" ||
+          severity === "critical" ||
+          alertType.includes("smoke") ||
+          alertType.includes("gas") ||
+          message.includes("smoke") ||
+          message.includes("gas"));
+    }
+
     function deviceState(device) {
       if (!device.online) return "offline";
       return device.display_state || device.state || "unknown";
     }
 
     function deviceStatusClass(device, state) {
-      if (state === "offline") return "offline";
+      const normalized = String(state || "").toLowerCase();
+      if (normalized === "offline") return "offline";
+      if (normalized === "off") return "off";
       if (device.stale) return "stale";
       return "";
     }
@@ -1413,9 +2058,44 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       }) || {};
     }
 
+    function deviceSortValue(device) {
+      const explicit = Number(device.display_order ?? device.sort_order ?? device.order ?? device.position);
+      if (Number.isFinite(explicit)) return explicit;
+      const id = String(device.device_id || device.id || device._dashboardKey || "");
+      const match = id.match(/([0-9]+)/);
+      return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+    }
+
+    function deviceSortRank(device) {
+      const type = String(device.type || "").toLowerCase();
+      if (type.includes("breaker")) return 0;
+      if (device.controllable === true) return 1;
+      return 2;
+    }
+
+    function deviceSortText(device) {
+      return [
+        device.branch,
+        device.name,
+        device.device_id,
+        device.id,
+        device._dashboardKey,
+      ].map((value) => String(value || "").trim().toLowerCase()).join("|");
+    }
+
+    function compareDevices(a, b) {
+      const rankDiff = deviceSortRank(a) - deviceSortRank(b);
+      if (rankDiff) return rankDiff;
+      const valueDiff = deviceSortValue(a) - deviceSortValue(b);
+      if (valueDiff) return valueDiff;
+      return deviceSortText(a).localeCompare(deviceSortText(b), undefined, { numeric: true, sensitivity: "base" });
+    }
+
     function render(data) {
       const dashboard = data.dashboard || {};
+      const cloud = data.cloud || {};
       const energy = dashboard.energy || {};
+      const monthly = dashboard.monthly_usage || {};
       const room = dashboard.room || {};
       const devices = dashboard.devices || {};
       const sensorHub = sensorDevice(devices);
@@ -1423,21 +2103,29 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       const sensorStatus = sensorHub.status || {};
       const sensorTimestamp = firstPresent(sensorPayload.timestamp_ms, sensorPayload.timestampMs, sensorStatus.last_seen_ms, sensorStatus.lastSeenMs, room.timestamp_ms, room.timestampMs);
       const sensorOnline = boolValue(firstPresent(sensorHub.online, sensorPayload.sensorOnline, sensorPayload.sensor_online, sensorPayload.online, room.sensorOnline, room.sensor_online, room.online)) && sensorPayload.stale !== true && room.stale !== true;
-      const deviceList = Object.values(devices).filter((device) => {
+      const deviceList = Object.entries(devices).map(([key, value]) => ({
+        _dashboardKey: key,
+        id: key,
+        ...(value || {}),
+      })).filter((device) => {
         const type = String(device.type || "");
         const id = String(device.id || device.device_id || "");
         return type !== "sensor_hub" && type !== "esp32_sensor" && !id.startsWith("esp32");
-      });
+      }).sort(compareDevices);
       const breakers = deviceList.filter((device) => String(device.type || "").includes("breaker"));
       const activeBreakers = breakers.filter((device) => deviceState(device) === "on").length;
 
-      text("subtitle", `${data.home_id || "home"} - ${dashboard.updated_at_iso || "waiting for live state"}`);
+      text("subtitle", `${data.home_id || "home"} - ${dashboardTimeText(dashboard.updated_at_ms || data.updated_at_ms)}`);
       text("statusText", data.paired ? "Live" : "Unpaired");
       text("energyTimestamp", timestampText(energy.timestampMs || energy.timestamp_ms || dashboard.updated_at_ms));
       text("power", fmt.format(number(energy.currentPowerW ?? energy.powerW)));
-      text("energyToday", `${fmt.format(number(energy.energyTodayKwh ?? energy.totalEnergyKwh))} kWh`);
-      text("costToday", `${number(energy.costToday).toFixed(3)} BD`);
+      text("energyToday", energyText(energy.energyTodayKwh ?? energy.totalEnergyKwh));
+      text("costToday", costText(energy.costToday));
       text("breakerCount", `${activeBreakers}/${breakers.length || 0}`);
+      text("monthlyUsage", monthly.available ? energyText(monthly.usage_kwh) : "-- kWh");
+      text("monthlyCost", monthly.available ? costText(monthly.cost_bhd) : "-- BD");
+      text("monthlyStatus", monthly.available ? "Available" : "Unavailable");
+      text("monthlySource", monthly.available ? `Source: ${monthly.source || "cloud"}` : (monthly.message || cloud.message || "Monthly usage waiting for data."));
       text("roomStatus", sensorOnline ? "Online" : room.stale ? "Stale" : "Offline");
       document.getElementById("roomStatus").className = `state ${sensorOnline ? "" : room.stale ? "stale" : "offline"}`;
       text("temperature", currentSensorValue(sensorOnline, firstPresent(sensorPayload.temperature, room.temperature), " C"));
@@ -1465,7 +2153,7 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
             ? `
               <div class="two-col">
                 <div><div class="label">Power</div><div class="small-value">${valueOrDash(device.power_W, " W")}</div></div>
-                <div><div class="label">Energy</div><div class="small-value">${valueOrDash(device.energy_kWh, " kWh")}</div></div>
+                <div><div class="label">Energy</div><div class="small-value">${energyText(device.energy_kWh)}</div></div>
                 <div><div class="label">Voltage</div><div class="small-value">${valueOrDash(device.voltage_V, " V")}</div></div>
                 <div><div class="label">Current</div><div class="small-value">${valueOrDash(device.current_A, " A")}</div></div>
               </div>
@@ -1498,8 +2186,14 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       }
 
       const alerts = dashboard.alerts || [];
+      const notifications = dashboard.notifications || [];
       const aiNotifications = dashboard.ai_notifications || [];
+      const recommendations = dashboard.recommendations || aiNotifications.filter((item) => {
+        const category = String(item.category || item.type || "").toLowerCase();
+        return category === "recommendation" || item.recommendation_type || item.recommendation;
+      });
       const ai = dashboard.ai || {};
+      const safety = dashboard.safety || {};
       const notes = [];
       if (ai.ai_status_summary || ai.summary) {
         notes.push(`<span class="warn">AI: ${ai.ai_status_summary || ai.summary}</span>`);
@@ -1507,33 +2201,30 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       if (room.stale || room.online === false) {
         notes.push('<span class="warn">Room sensors are offline or stale.</span>');
       }
-      for (const alert of alerts) {
-        notes.push(`<span class="error">${alert.title || alert.message || "Active alert"}</span>`);
+      for (const notification of notifications.slice(0, 3)) {
+        notes.push(`<span class="warn">${itemText(notification)}</span>`);
       }
-      for (const notification of aiNotifications.filter((item) => {
-        const severity = String(item.severity || "info").toLowerCase();
-        return severity === "critical" || severity === "high";
-      }).slice(0, 3)) {
-        const severity = String(notification.severity || "info").toLowerCase();
-        const klass = severity === "critical" || severity === "high" ? "error" : "warn";
-        notes.push(`<span class="${klass}">AI: ${notification.title || notification.message || "Notification"}</span>`);
-      }
-      document.getElementById("alerts").innerHTML = notes.length ? `<div class="notes-list">${notes.map((note) => `<div class="note">${note}</div>`).join("")}</div>` : "No active alerts.";
+      const cloudOffline = cloud.available === false;
+      const alertsUnavailable = cloudOffline && !alerts.length ? "Cloud alerts paused until internet returns." : "";
+      const recommendationsUnavailable = cloudOffline && !recommendations.length ? "Cloud recommendations paused until internet returns." : "";
+      const noteList = [
+        ...alerts.map((alert) => ({ ...alert, severity: alert.severity || "high" })),
+        ...notes.map((note) => ({ message: note })),
+      ];
+      renderItems("alerts", noteList, "No active alerts or notes.", alertsUnavailable);
+      renderItems("recommendations", recommendations, "No recommendations available.", recommendationsUnavailable);
+      text("recommendationSource", recommendations.length ? "Cloud AI" : (cloudOffline ? "Cloud paused" : "Unavailable"));
 
       const overlay = document.getElementById("alertOverlay");
       const overlayMessage = document.getElementById("alertOverlayMessage");
-      const criticalAlert = [...alerts, ...aiNotifications].find((alert) => {
-        const severity = String(alert.severity || alert.level || "").toLowerCase();
-        const alertType = String(alert.alert_type || alert.type || alert.category || "").toLowerCase();
-        const message = String(alert.message || alert.title || "").toLowerCase();
-        return severity === "critical" || alertType.includes("smoke") || alertType.includes("gas") || message.includes("smoke") || message.includes("gas");
-      });
-      if (!criticalAlert) {
+      const smokeConditionActive = smokeSensorActive(sensorPayload, room) || smokeSafetyActive(safety);
+      const smokeAlert = smokeConditionActive ? [...alerts, ...aiNotifications].find(alertIsSmokeRelated) : null;
+      if (!smokeConditionActive) {
         overlay.classList.remove("visible");
         overlayDismissedForAlertId = null;
       } else {
-        const alertId = String(criticalAlert.alert_id || criticalAlert.id || "critical_alert");
-        overlayMessage.textContent = criticalAlert.message || criticalAlert.title || "Smoke or gas was detected. Check the area immediately.";
+        const alertId = String(smokeAlert?.alert_id || smokeAlert?.id || "local_smoke_detected");
+        overlayMessage.textContent = smokeAlert?.message || smokeAlert?.title || "Smoke or gas was detected. Check the area immediately.";
         if (overlayDismissedForAlertId !== alertId) {
           overlay.classList.add("visible");
         }
@@ -1701,8 +2392,27 @@ KIOSK_DASHBOARD_HTML = """<!doctype html>
       adminLog(await adminFetch("/api/admin/maintenance/start", { method: "POST" }));
     };
 
+    function connectDashboardStream() {
+      if (!window.EventSource) {
+        refresh();
+        setInterval(refresh, 2000);
+        return;
+      }
+      const stream = new EventSource("/api/kiosk/dashboard-stream");
+      stream.onmessage = (event) => {
+        try {
+          render(JSON.parse(event.data));
+        } catch (error) {
+          text("statusText", "Stream error");
+        }
+      };
+      stream.onerror = () => {
+        text("statusText", "Reconnecting");
+      };
+    }
+
     refresh();
-    setInterval(refresh, 5000);
+    connectDashboardStream();
   </script>
 </body>
 </html>
@@ -1900,11 +2610,40 @@ def kiosk_session() -> Any:
 @app.get("/api/kiosk/dashboard-data")
 def local_kiosk_dashboard_data() -> Any:
     try:
-        if sync_home_assistant_device_states is not None:
+        refresh = str(request.args.get("refresh") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if refresh and sync_home_assistant_device_states is not None:
             sync_home_assistant_device_states(force=True)
-        return jsonify(kiosk_dashboard_data())
+        return jsonify(local_dashboard_payload())
     except Exception as error:
         return jsonify({"success": False, "message": str(error)}), 503
+
+
+def dashboard_stream() -> Any:
+    while True:
+        try:
+            payload = local_dashboard_payload()
+            yield f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+        except Exception as error:
+            payload = {"success": False, "message": str(error), "updated_at_ms": now_ms()}
+            yield f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+        time.sleep(1)
+
+
+@app.get("/api/kiosk/dashboard-stream")
+def local_kiosk_dashboard_stream() -> Response:
+    return Response(
+        dashboard_stream(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/kiosk/home-invite-qr")

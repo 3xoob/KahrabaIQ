@@ -160,7 +160,7 @@ final List<DemoScenarioData> demoScenarios = [
         category: 'energy',
         title: 'AC left on while empty',
         message: 'Turn off the AC or enable auto mode to reduce waste.',
-        deviceId: 'breaker_02',
+        deviceId: 'breaker_01',
         recommendationType: 'turn_off_ac',
         confidence: 0.93,
       ),
@@ -204,7 +204,7 @@ final List<DemoScenarioData> demoScenarios = [
         title: 'Device may be left on',
         message:
             'Review the socket device and turn it off if nobody is using it.',
-        deviceId: 'breaker_01',
+        deviceId: 'breaker_02',
         recommendationType: 'turn_off_socket',
         confidence: 0.84,
       ),
@@ -251,7 +251,7 @@ final List<DemoScenarioData> demoScenarios = [
         category: 'routine',
         title: 'AC outside routine',
         message: 'Confirm whether the AC should stay on at this time.',
-        deviceId: 'breaker_02',
+        deviceId: 'breaker_01',
         recommendationType: 'review_ac_schedule',
         confidence: 0.78,
       ),
@@ -496,17 +496,6 @@ DemoScenarioData _scenario({
     devices: [
       _device(
         id: 'breaker_01',
-        name: 'Socket Breaker',
-        type: DeviceType.socket,
-        isOn: socketOn,
-        power: socketPower,
-        branch: 'Socket',
-        online: breakerOnline,
-        stale: !breakerOnline,
-        lastSeen: breakerOnline ? now : now.subtract(const Duration(minutes: 16)),
-      ),
-      _device(
-        id: 'breaker_02',
         name: 'AC Breaker',
         type: DeviceType.airConditioner,
         isOn: acOn,
@@ -514,7 +503,22 @@ DemoScenarioData _scenario({
         branch: 'AC',
         online: breakerOnline,
         stale: !breakerOnline,
-        lastSeen: breakerOnline ? now : now.subtract(const Duration(minutes: 16)),
+        lastSeen: breakerOnline
+            ? now
+            : now.subtract(const Duration(minutes: 16)),
+      ),
+      _device(
+        id: 'breaker_02',
+        name: 'Socket Breaker',
+        type: DeviceType.socket,
+        isOn: socketOn,
+        power: socketPower,
+        branch: 'Socket',
+        online: breakerOnline,
+        stale: !breakerOnline,
+        lastSeen: breakerOnline
+            ? now
+            : now.subtract(const Duration(minutes: 16)),
       ),
     ],
     alerts: alerts,
@@ -572,9 +576,9 @@ DemoScenarioData _scenario({
                   ? 'Socket Breaker'
                   : 'System',
               deviceId: acOn
-                  ? 'breaker_02'
-                  : socketOn
                   ? 'breaker_01'
+                  : socketOn
+                  ? 'breaker_02'
                   : 'system',
               suggestedCommand: recommendationType.contains('turn_off')
                   ? 'turn_off'
@@ -590,7 +594,13 @@ DemoScenarioData _scenario({
       'time_since_last_motion_minutes': occupied ? 1 : 35,
       ...occupancy,
     },
-    settingsSummary: {'mode': 'demo', 'recent_history': history},
+    settingsSummary: {
+      'mode': 'demo',
+      'monthly_cost_limit_bhd': 3.0,
+      'high_usage_warning_percent': 80,
+      'cost_per_kwh': ElectricityPricing.costPerKWh,
+      'recent_history': history,
+    },
     criticalAlerts: alerts
         .where((alert) => alert.severity.toLowerCase() == 'critical')
         .map((alert) => alert.toJson())
@@ -644,7 +654,11 @@ Device _device({
     energyToday: online ? power / 1000 : 0,
     controlMethod: 'demo_simulation',
     lastSeen: lastSeen,
-    statusLabel: !online ? 'offline' : stale ? 'stale' : 'online',
+    statusLabel: !online
+        ? 'offline'
+        : stale
+        ? 'stale'
+        : 'online',
   );
 }
 

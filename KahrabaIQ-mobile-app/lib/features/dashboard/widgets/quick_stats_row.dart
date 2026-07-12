@@ -11,12 +11,16 @@ class QuickStatsRow extends StatelessWidget {
     super.key,
     required this.reading,
     required this.devices,
+    required this.settingsSummary,
     this.onBreakersTap,
+    this.onBudgetTap,
   });
 
   final EnergyReading reading;
   final List<Device> devices;
+  final Map<String, dynamic> settingsSummary;
   final VoidCallback? onBreakersTap;
+  final VoidCallback? onBudgetTap;
 
   @override
   Widget build(BuildContext context) {
@@ -25,10 +29,6 @@ class QuickStatsRow extends StatelessWidget {
         .toList();
     final activeBreakers = breakerDevices.where((device) => device.isOn).length;
     final totalBreakers = breakerDevices.length;
-    final activePower = devices.fold<double>(
-      0,
-      (sum, device) => sum + device.currentPower,
-    );
     final breakerEnergy = breakerDevices.fold<double>(
       0,
       (sum, device) => sum + device.energyToday,
@@ -59,14 +59,10 @@ class QuickStatsRow extends StatelessWidget {
         ),
         const SizedBox(width: 10),
         Expanded(
-          child: MetricCard(
-            title: 'Power',
-            value: (reading.power > 0 ? reading.power : activePower)
-                .toStringAsFixed(0),
-            unit: 'W',
-            icon: Icons.bolt,
-            color: ColorTokens.warning,
-            trendLabel: 'live',
+          child: _BudgetProgressCard(
+            reading: reading,
+            settingsSummary: settingsSummary,
+            onTap: onBudgetTap,
           ),
         ),
         const SizedBox(width: 10),
@@ -85,9 +81,85 @@ class QuickStatsRow extends StatelessWidget {
   }
 }
 
+class _BudgetProgressCard extends StatelessWidget {
+  const _BudgetProgressCard({
+    required this.reading,
+    required this.settingsSummary,
+    required this.onTap,
+  });
+
+  final EnergyReading reading;
+  final Map<String, dynamic> settingsSummary;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final demoMode = settingsSummary['mode'] == 'demo';
+    final limit = _settingsNumber(
+      settingsSummary,
+      'monthly_cost_limit_bhd',
+      fallback: demoMode ? 3.0 : 0,
+    );
+    final current = reading.costMonth;
+    final percent = limit > 0 ? (current / limit) * 100 : 0.0;
+    final status = limit <= 0
+        ? 'no budget'
+        : current > limit
+        ? 'over budget'
+        : percent >=
+              _settingsNumber(
+                settingsSummary,
+                'high_usage_warning_percent',
+                fallback: 80,
+              )
+        ? 'near limit'
+        : 'on track';
+    final color = status == 'over budget'
+        ? ColorTokens.danger
+        : status == 'near limit'
+        ? ColorTokens.warning
+        : status == 'no budget'
+        ? ColorTokens.textMuted
+        : ColorTokens.success;
+
+    return MetricCard(
+      title: 'Budget',
+      value: limit > 0
+          ? '${current.toStringAsFixed(1)}/${limit.toStringAsFixed(0)}'
+          : '--',
+      unit: limit > 0 ? 'BHD' : '',
+      icon: Icons.account_balance_wallet_outlined,
+      color: color,
+      trendLabel: limit > 0
+          ? '${percent.toStringAsFixed(0)}% $status'
+          : 'set limit',
+      isTrendPositive: status != 'over budget',
+      onTap: onTap,
+      footer: LinearProgressIndicator(
+        value: limit > 0 ? (percent / 100).clamp(0, 1) : 0,
+        color: color,
+        backgroundColor: ColorTokens.border,
+        minHeight: 4,
+      ),
+    );
+  }
+}
+
 ({String value, String unit}) _energyDisplay(double kwh) {
   if (kwh > 0 && kwh < 1) {
     return (value: (kwh * 1000).toStringAsFixed(0), unit: 'Wh');
   }
   return (value: kwh.toStringAsFixed(1), unit: 'kWh');
+}
+
+double _settingsNumber(
+  Map<String, dynamic> values,
+  String key, {
+  double fallback = 0,
+}) {
+  final value = values[key];
+  if (value is num) {
+    return value.toDouble();
+  }
+  return double.tryParse(value?.toString() ?? '') ?? fallback;
 }
